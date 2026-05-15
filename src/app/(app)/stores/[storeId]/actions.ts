@@ -2,15 +2,14 @@
 
 import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
-import { start } from "workflow/api";
 
+import { runStoreGeneration } from "@/lib/store-generation/generation-runner";
 import { getStoreJob } from "@/lib/stores/repository";
 import {
   createGenerationWorkflowRun,
   getLatestWorkflowRunForStore,
   updateWorkflowRun,
 } from "@/lib/stores/workflow-runs";
-import { generateStoreWorkflow } from "@workflows/generate-store";
 
 export async function launchStoreAction(storeId: string) {
   const store = await getStoreJob(storeId);
@@ -34,17 +33,17 @@ export async function launchStoreAction(storeId: string) {
   const workflowRun = await createGenerationWorkflowRun(storeId);
 
   try {
-    const run = await start(generateStoreWorkflow, [
-      {
-        storeId,
-        workflowRunId: workflowRun.id,
-      },
-    ]);
-
     await updateWorkflowRun(workflowRun.id, {
-      providerRunId: run.runId,
+      providerRunId: workflowRun.id,
       status: "running",
       currentStep: "queued",
+    });
+
+    void runStoreGeneration({
+      storeId,
+      workflowRunId: workflowRun.id,
+    }).catch((error: unknown) => {
+      console.error("[store-generation] background job failed", error);
     });
   } catch (error) {
     await updateWorkflowRun(workflowRun.id, {
@@ -52,7 +51,7 @@ export async function launchStoreAction(storeId: string) {
       currentStep: "failed",
       completedAt: new Date().toISOString(),
       errorMessage:
-        error instanceof Error ? error.message : "Failed to start workflow.",
+        error instanceof Error ? error.message : "Failed to start generation.",
     });
     throw error;
   }

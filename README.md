@@ -2,7 +2,7 @@
 
 StoreForge AI turns a business idea into a deployed ecommerce storefront using autonomous repository transformation.
 
-This repository contains the StoreForge demo spine: blueprint approval, Supabase-backed generation jobs, Codex repository transformation spikes, and the first Vercel Workflow orchestration path.
+This repository contains the StoreForge demo spine: blueprint approval, Supabase-backed generation jobs, Codex repository transformation spikes, and a lightweight TypeScript generation runner.
 
 ## App Routes
 
@@ -22,9 +22,7 @@ This repository contains the StoreForge demo spine: blueprint approval, Supabase
 - `src/lib/github` - generated repository boundary
 - `src/lib/vercel` - deployment automation boundary
 - `src/lib/blob` - generated asset storage boundary
-- `src/lib/store-generation` - request validation and generation planning
-- `workflows/generate-store.ts` - Vercel Workflow orchestration for Commerce transformation
-- `src/workflows` - workflow re-export boundary
+- `src/lib/store-generation` - request validation, generation planning, and the Commerce transformation runner
 - `prompts` - Codex repository transformation prompts
 - `supabase/schema.sql` - minimal database schema
 - `supabase/migrations` - incremental schema updates
@@ -38,7 +36,7 @@ cp .env.example .env.local
 npm run dev
 ```
 
-The scaffold uses Clerk, Supabase, Tailwind, shadcn/ui, Zod, Workflow SDK, and the Codex TypeScript SDK. Final GitHub repository creation and Vercel deployment automation are still TODOs.
+The scaffold uses Clerk, Supabase, Tailwind, shadcn/ui, Zod, and the Codex TypeScript SDK. Final GitHub repository creation, durable cloud orchestration, and Vercel deployment automation are still TODOs.
 
 Apply the Supabase schema before launching stores. If you already applied the initial schema, also run:
 

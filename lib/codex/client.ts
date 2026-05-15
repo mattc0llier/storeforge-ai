@@ -1,3 +1,6 @@
+import { existsSync } from "node:fs";
+import path from "node:path";
+
 import {
   Codex,
   type CodexOptions,
@@ -10,6 +13,7 @@ import {
 export interface StoreForgeCodexClientOptions {
   apiKey?: string;
   baseUrl?: string;
+  codexPathOverride?: string;
   env?: Record<string, string>;
 }
 
@@ -47,7 +51,16 @@ export function createStoreForgeCodexClient(
     codexOptions.env = options.env;
   }
 
-  // TODO: Add workflow-scoped config overrides for production repository runs.
+  const codexPathOverride =
+    options.codexPathOverride ??
+    process.env.CODEX_CLI_PATH ??
+    resolveBundledCodexBinary();
+
+  if (codexPathOverride) {
+    codexOptions.codexPathOverride = codexPathOverride;
+  }
+
+  // TODO: Add generation-scoped config overrides for production repository runs.
   return new Codex(codexOptions);
 }
 
@@ -66,7 +79,7 @@ export function startWorkspaceThread(
     threadOptions.model = options.model;
   }
 
-  // TODO: Thread options should eventually be persisted with workflow_runs.
+  // TODO: Thread options should eventually be persisted with generation runs.
   return codex.startThread(threadOptions);
 }
 
@@ -192,4 +205,71 @@ function formatThreadItemEvent(
 function assertNever(value: never): string {
   void value;
   return "[codex] unknown item";
+}
+
+function resolveBundledCodexBinary() {
+  const target = getCodexBinaryTarget();
+
+  if (!target) {
+    return null;
+  }
+
+  const binaryPath = path.join(
+    process.cwd(),
+    "node_modules",
+    "@openai",
+    target.packageName,
+    "vendor",
+    target.triple,
+    "codex",
+    process.platform === "win32" ? "codex.exe" : "codex",
+  );
+
+  return existsSync(binaryPath) ? binaryPath : null;
+}
+
+function getCodexBinaryTarget() {
+  if (process.platform === "darwin" && process.arch === "arm64") {
+    return {
+      packageName: "codex-darwin-arm64",
+      triple: "aarch64-apple-darwin",
+    };
+  }
+
+  if (process.platform === "darwin" && process.arch === "x64") {
+    return {
+      packageName: "codex-darwin-x64",
+      triple: "x86_64-apple-darwin",
+    };
+  }
+
+  if (process.platform === "linux" && process.arch === "arm64") {
+    return {
+      packageName: "codex-linux-arm64",
+      triple: "aarch64-unknown-linux-musl",
+    };
+  }
+
+  if (process.platform === "linux" && process.arch === "x64") {
+    return {
+      packageName: "codex-linux-x64",
+      triple: "x86_64-unknown-linux-musl",
+    };
+  }
+
+  if (process.platform === "win32" && process.arch === "arm64") {
+    return {
+      packageName: "codex-win32-arm64",
+      triple: "aarch64-pc-windows-msvc",
+    };
+  }
+
+  if (process.platform === "win32" && process.arch === "x64") {
+    return {
+      packageName: "codex-win32-x64",
+      triple: "x86_64-pc-windows-msvc",
+    };
+  }
+
+  return null;
 }

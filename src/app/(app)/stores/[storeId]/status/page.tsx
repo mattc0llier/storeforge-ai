@@ -32,7 +32,7 @@ export default async function StoreStatusPage({
           {store.name} Launch Status
         </h1>
         <p className="text-sm text-muted-foreground">
-          Live workflow progress, concise logs, and repository artifact metadata
+          Live generation progress, concise logs, and repository artifact metadata
           for the autonomous Commerce transformation.
         </p>
       </div>

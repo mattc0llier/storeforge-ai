@@ -160,18 +160,21 @@ export function WorkflowStatusPanel({
         <CardHeader>
           <CardTitle>Technical Details</CardTitle>
           <CardDescription>
-            Concise run metadata for debugging without crowding the default
-            approval flow.
+            Concise generation metadata for debugging without crowding the
+            default approval flow.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <DetailRow label="Workflow status" value={workflowRun?.status ?? "not started"} />
+          <DetailRow label="Generation status" value={workflowRun?.status ?? "not started"} />
           <DetailRow label="Current step" value={workflowRun?.currentStep ?? "queued"} />
           <DetailRow
             label="Repair attempts"
             value={String(workflowRun?.repairCount ?? 0)}
           />
-          <DetailRow label="Run ID" value={workflowRun?.providerRunId ?? "pending"} />
+          <DetailRow
+            label="Run ID"
+            value={workflowRun?.providerRunId ?? workflowRun?.id ?? "pending"}
+          />
           <DetailRow
             label="Workspace"
             value={workflowRun?.workspacePath ?? "pending"}

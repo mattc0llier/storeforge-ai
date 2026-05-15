@@ -3,40 +3,32 @@ import { mkdtemp } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
-import { getWritable } from "workflow";
 import type { ThreadEvent } from "@openai/codex-sdk";
 
 import {
   createStoreForgeCodexClient,
   logCodexEvent,
   startWorkspaceThread,
-} from "../lib/codex/client";
+} from "../../../lib/codex/client";
 import {
   buildCommerceRepairPrompt,
   buildCommerceTransformPrompt,
-} from "../prompts/codex-transform";
-import { getStoreJob } from "../src/lib/stores/repository";
+} from "../../../prompts/codex-transform";
+import { getStoreJob } from "../stores/repository";
 import {
   updateStoreStatus,
   updateWorkflowRun,
-} from "../src/lib/stores/workflow-runs";
+} from "../stores/workflow-runs";
 
 const MAX_REPAIR_ATTEMPTS = 2;
 const PNPM = "npx --yes pnpm@10.33.0";
 
-export type GenerateStoreWorkflowInput = {
+export type StoreGenerationRunInput = {
   storeId: string;
   workflowRunId: string;
 };
 
-export type GenerateStoreWorkflowEvent = {
-  type: "progress";
-  step: string;
-  status: "running" | "succeeded" | "failed";
-  message: string;
-};
-
-export type GenerateStoreWorkflowResult = {
+export type StoreGenerationRunResult = {
   success: boolean;
   workspacePath: string;
   repairAttemptsUsed: number;
@@ -72,11 +64,9 @@ type VerificationResult = {
   commands: CommandResult[];
 };
 
-export async function generateStoreWorkflow(
-  input: GenerateStoreWorkflowInput,
-): Promise<GenerateStoreWorkflowResult> {
-  "use workflow";
-
+export async function runStoreGeneration(
+  input: StoreGenerationRunInput,
+): Promise<StoreGenerationRunResult> {
   try {
     const preparedWorkspace = await prepareWorkspace(input);
     const productAssets = await generateProductAssets(input);
@@ -93,19 +83,14 @@ export async function generateStoreWorkflow(
       validation,
     });
   } catch (error) {
-    await markWorkflowFailed(
-      input,
-      error instanceof Error ? error.message : "Unknown workflow failure",
-    );
+    await markWorkflowFailed(input, formatUnknownError(error));
     throw error;
   }
 }
 
 async function prepareWorkspace(
-  input: GenerateStoreWorkflowInput,
+  input: StoreGenerationRunInput,
 ): Promise<PreparedWorkspace> {
-  "use step";
-
   console.log(`[generate-store] prepareWorkspace START store=${input.storeId}`);
   await emitProgress("workspace", "running", "Preparing Commerce workspace");
   await updateStoreStatus(input.storeId, "generating");
@@ -146,10 +131,8 @@ async function prepareWorkspace(
 }
 
 async function generateProductAssets(
-  input: GenerateStoreWorkflowInput,
+  input: StoreGenerationRunInput,
 ): Promise<ProductAssetMetadata> {
-  "use step";
-
   console.log(`[generate-store] generateProductAssets START store=${input.storeId}`);
   await emitProgress("products", "running", "Generating product placeholders");
   await updateWorkflowRun(input.workflowRunId, {
@@ -182,11 +165,9 @@ async function generateProductAssets(
 }
 
 async function executeCodexTransformation(
-  input: GenerateStoreWorkflowInput,
+  input: StoreGenerationRunInput,
   workspacePath: string,
 ) {
-  "use step";
-
   console.log(`[generate-store] executeCodexTransformation START store=${input.storeId}`);
   await emitProgress("codex", "running", "Codex transforming storefront");
   await updateWorkflowRun(input.workflowRunId, {
@@ -200,6 +181,7 @@ async function executeCodexTransformation(
   }
 
   const activity = await runCodexTurnWithStreaming({
+    workflowRunId: input.workflowRunId,
     workspacePath,
     prompt: buildCommerceTransformPrompt({ blueprint: store.blueprint }),
     label: "transform",
@@ -213,11 +195,9 @@ async function executeCodexTransformation(
 }
 
 async function validateAndRepairWorkspace(
-  input: GenerateStoreWorkflowInput,
+  input: StoreGenerationRunInput,
   workspacePath: string,
 ) {
-  "use step";
-
   console.log(`[generate-store] validateAndRepairWorkspace START store=${input.storeId}`);
   await emitProgress("build", "running", "Running build and test validation");
   await updateWorkflowRun(input.workflowRunId, {
@@ -259,6 +239,7 @@ async function validateAndRepairWorkspace(
 
     const modifiedFiles = await getModifiedFiles(workspacePath);
     const repairActivity = await runCodexTurnWithStreaming({
+      workflowRunId: input.workflowRunId,
       workspacePath,
       label: `repair-${repairAttemptsUsed}`,
       prompt: buildCommerceRepairPrompt({
@@ -325,13 +306,11 @@ async function persistGeneratedArtifactMetadata({
   productAssets,
   validation,
 }: {
-  input: GenerateStoreWorkflowInput;
+  input: StoreGenerationRunInput;
   preparedWorkspace: PreparedWorkspace;
   productAssets: ProductAssetMetadata;
   validation: Awaited<ReturnType<typeof validateAndRepairWorkspace>>;
-}): Promise<GenerateStoreWorkflowResult> {
-  "use step";
-
+}): Promise<StoreGenerationRunResult> {
   console.log(`[generate-store] persistGeneratedArtifactMetadata START store=${input.storeId}`);
   await emitProgress(
     "preparing_deployment",
@@ -378,11 +357,9 @@ async function persistGeneratedArtifactMetadata({
 }
 
 async function markWorkflowFailed(
-  input: GenerateStoreWorkflowInput,
+  input: StoreGenerationRunInput,
   message: string,
 ) {
-  "use step";
-
   console.error(`[generate-store] FAILED ${message}`);
   await updateWorkflowRun(input.workflowRunId, {
     status: "failed",
@@ -396,30 +373,19 @@ async function markWorkflowFailed(
 
 async function emitProgress(
   step: string,
-  status: GenerateStoreWorkflowEvent["status"],
+  status: "running" | "succeeded" | "failed",
   message: string,
 ) {
-  "use step";
-
-  const writer = getWritable<GenerateStoreWorkflowEvent>().getWriter();
-
-  try {
-    await writer.write({
-      type: "progress",
-      step,
-      status,
-      message,
-    });
-  } finally {
-    writer.releaseLock();
-  }
+  console.log(`[generate-store] ${step} ${status}: ${message}`);
 }
 
 async function runCodexTurnWithStreaming({
+  workflowRunId,
   workspacePath,
   prompt,
   label,
 }: {
+  workflowRunId: string;
   workspacePath: string;
   prompt: string;
   label: string;
@@ -433,35 +399,31 @@ async function runCodexTurnWithStreaming({
     model: process.env.CODEX_MODEL,
     skipGitRepoCheck: false,
   });
-  const writer = getWritable<GenerateStoreWorkflowEvent>().getWriter();
   const activity: string[] = [];
 
-  try {
-    const { events } = await thread.runStreamed(prompt);
+  const { events } = await thread.runStreamed(prompt);
 
-    for await (const event of events) {
-      const line = formatCodexEventLine(event);
-      activity.push(`[${label}] ${line}`);
+  for await (const event of events) {
+    const line = formatCodexEventLine(event);
+    activity.push(`[${label}] ${line}`);
 
-      if (shouldStreamCodexLine(line)) {
-        await writer.write({
-          type: "progress",
-          step: "codex",
-          status: "running",
-          message: line,
-        });
-      }
-
-      if (event.type === "turn.failed") {
-        throw new Error(event.error.message);
-      }
-
-      if (event.type === "error") {
-        throw new Error(event.message);
-      }
+    if (shouldStreamCodexLine(line)) {
+      console.log(line);
     }
-  } finally {
-    writer.releaseLock();
+
+    if (activity.length % 8 === 0) {
+      await updateWorkflowRun(workflowRunId, {
+        codexActivitySummary: summarizeLines(activity),
+      });
+    }
+
+    if (event.type === "turn.failed") {
+      throw new Error(event.error.message);
+    }
+
+    if (event.type === "error") {
+      throw new Error(event.message);
+    }
   }
 
   return activity;
@@ -478,7 +440,11 @@ async function verifyCommerceWorkspace(
     SHOPIFY_STORE_DOMAIN: "",
     SHOPIFY_STOREFRONT_ACCESS_TOKEN: "",
   };
-  const commands = [`${PNPM} build`, `${PNPM} test`];
+  const commands = [
+    `${PNPM} prettier --write --ignore-unknown .`,
+    `${PNPM} build`,
+    `${PNPM} test`,
+  ];
   const results: CommandResult[] = [];
 
   for (const command of commands) {
@@ -667,4 +633,20 @@ function tail(value: string, maxLength = 2000) {
   }
 
   return value.slice(value.length - maxLength);
+}
+
+function formatUnknownError(error: unknown) {
+  if (error instanceof Error) {
+    return error.stack ? `${error.message}\n${tail(error.stack)}` : error.message;
+  }
+
+  if (typeof error === "string") {
+    return error;
+  }
+
+  try {
+    return JSON.stringify(error, null, 2);
+  } catch {
+    return String(error);
+  }
 }
