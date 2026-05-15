@@ -1,36 +1,91 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# StoreForge AI
 
-## Getting Started
+StoreForge AI turns a business idea into a deployed ecommerce storefront using autonomous repository transformation.
 
-First, run the development server:
+This repository contains the StoreForge demo spine: blueprint approval, Supabase-backed generation jobs, Codex repository transformation spikes, and the first Vercel Workflow orchestration path.
+
+## App Routes
+
+- `/dashboard` - operational overview
+- `/create-store` - prompt-to-blueprint flow
+- `/store-status` - shortcut to demo status
+- `/stores/[storeId]` - launch approval screen
+- `/stores/[storeId]/status` - dynamic status route
+
+## Structure
+
+- `src/app` - Next.js App Router pages and layouts
+- `src/components` - shared app shell and shadcn/ui components
+- `src/lib/db` - Zod schemas and Supabase database types
+- `src/lib/supabase` - lazy Supabase client factories
+- `src/lib/codex` - Codex repository execution boundary
+- `src/lib/github` - generated repository boundary
+- `src/lib/vercel` - deployment automation boundary
+- `src/lib/blob` - generated asset storage boundary
+- `src/lib/store-generation` - request validation and generation planning
+- `workflows/generate-store.ts` - Vercel Workflow orchestration for Commerce transformation
+- `src/workflows` - workflow re-export boundary
+- `prompts` - Codex repository transformation prompts
+- `supabase/schema.sql` - minimal database schema
+- `supabase/migrations` - incremental schema updates
+- `tests` - placeholder test plan
+
+## Setup
 
 ```bash
+npm install
+cp .env.example .env.local
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+The scaffold uses Clerk, Supabase, Tailwind, shadcn/ui, Zod, Workflow SDK, and the Codex TypeScript SDK. Final GitHub repository creation and Vercel deployment automation are still TODOs.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Apply the Supabase schema before launching stores. If you already applied the initial schema, also run:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```sql
+-- supabase/migrations/0002_workflow_run_observability.sql
+```
 
-## Learn More
+Launch flow:
 
-To learn more about Next.js, take a look at the following resources:
+1. Create a store from `/create-store`.
+2. Review `/stores/[storeId]`.
+3. Click `Launch Store`.
+4. Watch `/stores/[storeId]/status` for workspace, Codex, build, repair, and artifact progress.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Codex SDK Spike
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+Run the minimal filesystem modification spike with:
 
-## Deploy on Vercel
+```bash
+npm run codex:spike
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+Required environment:
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `CODEX_API_KEY` - required unless your local Codex CLI is already authenticated
+- `CODEX_MODEL` - optional model override
+- `CODEX_BASE_URL` - optional API base URL override
+
+Expected output:
+
+- a temporary workspace path
+- streamed Codex event logs such as `thread.started`, `item.completed`, and `turn.completed`
+- a final JSON summary with `success: true`, the changed file path, event count, thread id, and token usage
+
+## Commerce Transformation Spike
+
+Run the first real repository transformation spike with:
+
+```bash
+npm run commerce:spike
+```
+
+The script clones `vercel/commerce` into a temporary workspace, installs dependencies, asks Codex to apply a bounded StoreForge transformation, runs `pnpm build` and `pnpm test`, and gives Codex up to two repair attempts if verification fails.
+
+Expected output:
+
+- modified files summary
+- build/test result
+- repair attempts used
+- temporary workspace path
