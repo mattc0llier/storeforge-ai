@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { Blocks } from "lucide-react";
+import Image from "next/image";
 
 import { Separator } from "@/components/ui/separator";
 
@@ -14,8 +14,16 @@ export function AppShell({ children }: Readonly<{ children: React.ReactNode }>) 
       <header className="sticky top-0 z-10 bg-background">
         <div className="mx-auto flex h-16 w-full max-w-7xl items-center justify-between px-6 md:px-10">
           <Link href="/dashboard" className="flex items-center gap-2">
-            <span className="flex size-9 items-center justify-center rounded-lg border bg-card">
-              <Blocks className="size-4" />
+            <span className="flex size-9 items-center justify-center">
+              <Image
+                alt=""
+                aria-hidden="true"
+                className="h-8 w-auto"
+                height={83}
+                priority
+                src="/storeforge.svg"
+                width={71}
+              />
             </span>
             <span className="font-semibold">StoreForge AI</span>
           </Link>
