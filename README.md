@@ -88,6 +88,26 @@ Expected output:
 - repair attempts used
 - temporary workspace path
 
+## Commerce Sandbox Snapshot
+
+Production generation should run inside Vercel Sandbox instead of a Vercel
+Function process. Create a prepared Commerce snapshot after linking the Vercel
+project and pulling env vars:
+
+```bash
+npm run sandbox:snapshot
+```
+
+The script creates a `node24` sandbox from `vercel/commerce`, installs
+dependencies, prewarms the Codex CLI package, and prints:
+
+- `STOREFORGE_GENERATION_RUNTIME=sandbox`
+- `STOREFORGE_COMMERCE_SANDBOX_SNAPSHOT_ID=<snapshot id>`
+
+Add those to the Vercel project env vars. If no snapshot id is configured, the
+sandbox path falls back to cloning the Commerce repo inside the sandbox, which
+still avoids missing serverless binaries such as `git`.
+
 ## Vercel Project Runbook
 
 Link this checkout to the existing Vercel project:

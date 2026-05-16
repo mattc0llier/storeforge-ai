@@ -39,12 +39,18 @@ export async function launchStoreAction(storeId: string) {
       currentStep: "queued",
     });
 
-    void runStoreGeneration({
+    const generation = runStoreGeneration({
       storeId,
       workflowRunId: workflowRun.id,
-    }).catch((error: unknown) => {
-      console.error("[store-generation] background job failed", error);
     });
+
+    if (shouldAwaitGenerationStartup()) {
+      await generation;
+    } else {
+      void generation.catch((error: unknown) => {
+        console.error("[store-generation] background job failed", error);
+      });
+    }
   } catch (error) {
     await updateWorkflowRun(workflowRun.id, {
       status: "failed",
@@ -57,6 +63,16 @@ export async function launchStoreAction(storeId: string) {
   }
 
   redirect(`/stores/${storeId}/status`);
+}
+
+function shouldAwaitGenerationStartup() {
+  const runtime = process.env.STOREFORGE_GENERATION_RUNTIME;
+
+  if (runtime === "local") {
+    return false;
+  }
+
+  return runtime === "sandbox" || process.env.VERCEL === "1";
 }
 
 async function getCurrentUserId() {

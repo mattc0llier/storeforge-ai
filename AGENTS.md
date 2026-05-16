@@ -106,6 +106,27 @@ Do not sacrifice reliability for novelty.
 
 ---
 
+## Production Feedback Loop
+
+When rebuilding StoreForge from scratch, add the production feedback loop early.
+It is part of the demo spine, not polish.
+
+Set up:
+
+- a lightweight health route such as `/api/health/check`
+- GitHub-backed Vercel deployment from the first working scaffold
+- valid local Vercel CLI auth
+- documented `vercel link`, `vercel env pull .env.local`, and `pnpm dev`
+- enough persisted workflow error context to correlate UI failures with Vercel
+  runtime logs
+
+Use `vercel inspect`, `vercel logs`, and the health route as soon as production
+exists. Production-only failures, especially missing runtime binaries or
+serverless filesystem assumptions, should be caught before building deeper
+product features.
+
+---
+
 ## Performance Priorities
 
 The Vercel Commerce template is a known, repeated input. Do not make Codex
@@ -114,6 +135,10 @@ rediscover the entire repository on every generation.
 Prefer:
 
 - cached prepared Commerce templates over fresh network clone/install work
+- prepared Vercel Sandbox snapshots with Commerce dependencies already
+  installed
+- running expensive clone/install/Codex/build work inside a sandbox or worker,
+  while the web function only starts the job and observes persisted state
 - compact template maps in prompts
 - deterministic StoreForge code for known fallback catalog/theme scaffolding
 - narrow Codex edits against known files
@@ -122,6 +147,8 @@ Prefer:
 Avoid:
 
 - broad repo scans before every transformation
+- relying on Vercel Function runtime binaries such as `git` for repository
+  transformation work
 - reading `node_modules`, generated output, or unrelated template internals
 - asking Codex to perform deterministic formatting or boilerplate work
 - large creative rewrites when a known patch point exists

@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import type { ThreadEvent } from "@openai/codex-sdk";
+import { Sandbox } from "@vercel/sandbox";
 
 import {
   createStoreForgeCodexClient,
@@ -32,6 +33,14 @@ const COMMERCE_TEMPLATE_REPO_PATH = path.join(
   COMMERCE_TEMPLATE_CACHE_PATH,
   "commerce",
 );
+const COMMERCE_REPO_URL =
+  process.env.STOREFORGE_COMMERCE_REPO_URL ??
+  "https://github.com/vercel/commerce.git";
+const SANDBOX_WORKSPACE_PATH = "/vercel/sandbox";
+const SANDBOX_TRANSFORM_PROMPT_PATH = "/tmp/storeforge-transform-prompt.txt";
+const SANDBOX_BLUEPRINT_PATH = "/tmp/storeforge-blueprint.json";
+const SANDBOX_PRODUCT_ASSETS_PATH = "/tmp/storeforge-product-assets.json";
+const SANDBOX_JOB_PATH = "/tmp/storeforge-sandbox-job.mjs";
 
 export type StoreGenerationRunInput = {
   storeId: string;
@@ -83,6 +92,10 @@ type VerificationOptions = {
 export async function runStoreGeneration(
   input: StoreGenerationRunInput,
 ): Promise<StoreGenerationRunResult> {
+  if (shouldUseSandboxGeneration()) {
+    return startSandboxStoreGeneration(input);
+  }
+
   try {
     const preparedWorkspace = await prepareWorkspace(input);
     const productAssets = await generateProductAssets(input);
@@ -102,6 +115,732 @@ export async function runStoreGeneration(
     await markWorkflowFailed(input, formatUnknownError(error));
     throw error;
   }
+}
+
+async function startSandboxStoreGeneration(
+  input: StoreGenerationRunInput,
+): Promise<StoreGenerationRunResult> {
+  try {
+    console.log(`[generate-store] sandbox START store=${input.storeId}`);
+    await emitProgress("workspace", "running", "Starting Vercel Sandbox");
+    await updateStoreStatus(input.storeId, "generating");
+    await updateWorkflowRun(input.workflowRunId, {
+      status: "running",
+      currentStep: "workspace",
+      logsSummary: ["Starting Vercel Sandbox generation runtime"],
+    });
+
+    const store = await getStoreJob(input.storeId);
+
+    if (!store) {
+      throw new Error(`Store ${input.storeId} not found`);
+    }
+
+    const productAssets = store.blueprint.products.map((product) => ({
+      productId: product.id,
+      title: product.title,
+      imageUrl: product.imageUrl,
+      source: "blueprint-placeholder" as const,
+    }));
+
+    const sandbox = await Sandbox.create({
+      ...getSandboxCredentials(),
+      source: getSandboxSource(),
+      runtime: "node24",
+      resources: { vcpus: 4 },
+      timeout: Number(process.env.STOREFORGE_SANDBOX_TIMEOUT_MS ?? 2700000),
+      env: getSandboxJobEnvironment(input),
+    } as Parameters<typeof Sandbox.create>[0]);
+
+    const transformPrompt = buildCommerceTransformPrompt({
+      blueprint: store.blueprint,
+    });
+    await sandbox.writeFiles([
+      {
+        path: SANDBOX_TRANSFORM_PROMPT_PATH,
+        content: transformPrompt,
+      },
+      {
+        path: SANDBOX_BLUEPRINT_PATH,
+        content: JSON.stringify(store.blueprint, null, 2),
+      },
+      {
+        path: SANDBOX_PRODUCT_ASSETS_PATH,
+        content: JSON.stringify(productAssets, null, 2),
+      },
+      {
+        path: SANDBOX_JOB_PATH,
+        content: buildSandboxJobScript(),
+      },
+    ]);
+
+    const command = await sandbox.runCommand({
+      cmd: "node",
+      args: [SANDBOX_JOB_PATH],
+      cwd: SANDBOX_WORKSPACE_PATH,
+      detached: true,
+    });
+
+    const sandboxPath = SANDBOX_WORKSPACE_PATH;
+    await updateWorkflowRun(input.workflowRunId, {
+      providerRunId: `${input.workflowRunId}:${sandbox.sandboxId}:${command.cmdId}`,
+      workspacePath: sandboxPath,
+      logsSummary: [
+        `Vercel Sandbox ${sandbox.sandboxId} started`,
+        `Detached command ${command.cmdId} started`,
+      ],
+      artifactMetadata: {
+        sandboxId: sandbox.sandboxId,
+        sandboxCommandId: command.cmdId,
+        sandboxSource: getSandboxSourceLabel(),
+        workspacePath: sandboxPath,
+        productAssets,
+        heroImagePrompt: store.blueprint.heroImagePrompt,
+      },
+    });
+
+    await emitProgress(
+      "workspace",
+      "succeeded",
+      `Vercel Sandbox ${sandbox.sandboxId} started`,
+    );
+    console.log(`[generate-store] sandbox STARTED sandbox=${sandbox.sandboxId}`);
+
+    return {
+      success: true,
+      workspacePath: sandboxPath,
+      repairAttemptsUsed: 0,
+      modifiedFiles: [],
+      modifiedFilesSummary: [],
+      buildResult: "passed",
+    };
+  } catch (error) {
+    await markWorkflowFailed(input, formatUnknownError(error));
+    throw error;
+  }
+}
+
+function shouldUseSandboxGeneration() {
+  const runtime = process.env.STOREFORGE_GENERATION_RUNTIME;
+
+  if (runtime === "local") {
+    return false;
+  }
+
+  if (runtime === "sandbox") {
+    return true;
+  }
+
+  return process.env.VERCEL === "1";
+}
+
+function getSandboxCredentials() {
+  const token = process.env.VERCEL_TOKEN;
+  const teamId = process.env.VERCEL_ORG_ID;
+  const projectId = process.env.VERCEL_PROJECT_ID;
+
+  if (token && teamId && projectId) {
+    return { token, teamId, projectId };
+  }
+
+  return {};
+}
+
+function getSandboxSource() {
+  const snapshotId = process.env.STOREFORGE_COMMERCE_SANDBOX_SNAPSHOT_ID;
+
+  if (snapshotId) {
+    return {
+      type: "snapshot" as const,
+      snapshotId,
+    };
+  }
+
+  return {
+    type: "git" as const,
+    url: COMMERCE_REPO_URL,
+    depth: 1,
+  };
+}
+
+function getSandboxSourceLabel() {
+  const snapshotId = process.env.STOREFORGE_COMMERCE_SANDBOX_SNAPSHOT_ID;
+
+  return snapshotId ? `snapshot:${snapshotId}` : `git:${COMMERCE_REPO_URL}`;
+}
+
+function getSandboxJobEnvironment(input: StoreGenerationRunInput) {
+  return compactEnv({
+    STORE_ID: input.storeId,
+    WORKFLOW_RUN_ID: input.workflowRunId,
+    NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
+    SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    CODEX_API_KEY: process.env.CODEX_API_KEY,
+    OPENAI_API_KEY: process.env.CODEX_API_KEY,
+    CODEX_BASE_URL: process.env.CODEX_BASE_URL,
+    CODEX_MODEL: process.env.CODEX_MODEL,
+    CODEX_CLI_PACKAGE:
+      process.env.CODEX_CLI_PACKAGE ?? "@openai/codex@0.130.0",
+    PNPM_VERSION: "10.33.0",
+  });
+}
+
+function compactEnv(values: Record<string, string | undefined>) {
+  return Object.fromEntries(
+    Object.entries(values).filter((entry): entry is [string, string] =>
+      Boolean(entry[1]),
+    ),
+  );
+}
+
+function buildSandboxJobScript() {
+  return String.raw`import { spawn } from 'node:child_process';
+import { readFile, writeFile } from 'node:fs/promises';
+
+const WORKSPACE = '/vercel/sandbox';
+const TRANSFORM_PROMPT_PATH = '/tmp/storeforge-transform-prompt.txt';
+const BLUEPRINT_PATH = '/tmp/storeforge-blueprint.json';
+const PRODUCT_ASSETS_PATH = '/tmp/storeforge-product-assets.json';
+const MAX_REPAIR_ATTEMPTS = 2;
+const PNPM_VERSION = process.env.PNPM_VERSION || '10.33.0';
+const PNPM = 'npx --yes pnpm@' + PNPM_VERSION;
+
+const storeId = requiredEnv('STORE_ID');
+const workflowRunId = requiredEnv('WORKFLOW_RUN_ID');
+const supabaseUrl = requiredEnv('NEXT_PUBLIC_SUPABASE_URL');
+const supabaseServiceRoleKey = requiredEnv('SUPABASE_SERVICE_ROLE_KEY');
+
+const blueprint = JSON.parse(await readFile(BLUEPRINT_PATH, 'utf8'));
+const productAssets = JSON.parse(await readFile(PRODUCT_ASSETS_PATH, 'utf8'));
+
+await main().catch(async (error) => {
+  const message = formatUnknownError(error);
+  await patchWorkflowRun({
+    status: 'failed',
+    currentStep: 'failed',
+    completedAt: new Date().toISOString(),
+    errorMessage: message,
+    logsSummary: summarizeLines([message]),
+  }).catch(() => null);
+  await patchStoreStatus('failed').catch(() => null);
+  console.error(message);
+  process.exitCode = 1;
+});
+
+async function main() {
+  await patchStoreStatus('generating');
+  await patchWorkflowRun({
+    status: 'running',
+    currentStep: 'products',
+    workspacePath: WORKSPACE,
+    logsSummary: ['Sandbox generation job started'],
+    artifactMetadata: {
+      productAssets,
+      heroImagePrompt: blueprint.heroImagePrompt,
+      sandboxWorkspacePath: WORKSPACE,
+    },
+  });
+
+  await patchWorkflowRun({
+    currentStep: 'codex',
+    logsSummary: ['Product metadata prepared', 'Starting Codex transformation'],
+  });
+
+  const transformActivity = await runCodex({
+    label: 'transform',
+    promptPath: TRANSFORM_PROMPT_PATH,
+  });
+
+  await patchWorkflowRun({
+    currentStep: 'build',
+    codexActivitySummary: summarizeLines(transformActivity),
+    logsSummary: ['Codex transformation finished', 'Running Commerce validation'],
+  });
+
+  let repairAttemptsUsed = 0;
+  let verification = await verifyCommerceWorkspace({
+    retryOpaqueBuildFailure: true,
+  });
+  const logsSummary = verification.commands.map(summarizeCommand);
+  const codexActivity = [...transformActivity];
+
+  while (!verification.ok && repairAttemptsUsed < MAX_REPAIR_ATTEMPTS) {
+    repairAttemptsUsed += 1;
+
+    if (!verification.failedCommand) {
+      break;
+    }
+
+    await patchWorkflowRun({
+      currentStep: 'repair',
+      repairCount: repairAttemptsUsed,
+      logsSummary: summarizeLines(logsSummary),
+    });
+
+    const modifiedFiles = await getModifiedFiles();
+    const repairPromptPath = '/tmp/storeforge-repair-' + repairAttemptsUsed + '.txt';
+    await writeFile(
+      repairPromptPath,
+      buildRepairPrompt({
+        attempt: repairAttemptsUsed,
+        command: verification.failedCommand,
+        modifiedFiles,
+      }),
+    );
+
+    const repairActivity = await runCodex({
+      label: 'repair-' + repairAttemptsUsed,
+      promptPath: repairPromptPath,
+    });
+    codexActivity.push(...repairActivity);
+
+    verification = await verifyCommerceWorkspace({
+      retryOpaqueBuildFailure: true,
+    });
+    logsSummary.push(...verification.commands.map(summarizeCommand));
+  }
+
+  if (!verification.ok) {
+    await patchWorkflowRun({
+      currentStep: 'build',
+      logsSummary: summarizeLines([
+        ...logsSummary,
+        'Running final clean validation before failing',
+      ]),
+    });
+    verification = await verifyCommerceWorkspace({
+      cleanBeforeBuild: true,
+      retryOpaqueBuildFailure: true,
+    });
+    logsSummary.push(...verification.commands.map(summarizeCommand));
+  }
+
+  const modifiedFiles = await getModifiedFiles();
+  const modifiedFilesSummary = await getModifiedFileSummary();
+  const commandResults = verification.commands.map((command) => ({
+    command: command.command,
+    exitCode: command.exitCode,
+    durationMs: command.durationMs,
+  }));
+
+  await patchWorkflowRun({
+    status: verification.ok ? 'succeeded' : 'failed',
+    currentStep: verification.ok ? 'completed' : 'failed',
+    repairCount: repairAttemptsUsed,
+    logsSummary: summarizeLines(logsSummary),
+    modifiedFilesSummary,
+    codexActivitySummary: summarizeLines(codexActivity),
+    workspacePath: WORKSPACE,
+    artifactMetadata: {
+      productAssets,
+      heroImagePrompt: blueprint.heroImagePrompt,
+      buildResult: verification.ok ? 'passed' : 'failed',
+      commandResults,
+      failedCommandOutput: verification.failedCommand
+        ? serializeCommandResult(verification.failedCommand)
+        : null,
+      modifiedFiles,
+      sandboxWorkspacePath: WORKSPACE,
+    },
+    completedAt: new Date().toISOString(),
+    errorMessage: verification.ok
+      ? null
+      : 'Commerce verification failed after ' + repairAttemptsUsed + ' repair attempts',
+  });
+
+  await patchStoreStatus(verification.ok ? 'generated' : 'failed');
+
+  if (!verification.ok) {
+    throw new Error(
+      'Commerce verification failed after ' + repairAttemptsUsed + ' repair attempts',
+    );
+  }
+}
+
+async function runCodex({ label, promptPath }) {
+  const model = process.env.CODEX_MODEL
+    ? ' --model ' + shellQuote(process.env.CODEX_MODEL)
+    : '';
+  const codexPackage = process.env.CODEX_CLI_PACKAGE || '@openai/codex@0.130.0';
+  const command =
+    'npx --yes ' +
+    shellQuote(codexPackage) +
+    ' exec --json --sandbox workspace-write --skip-git-repo-check --config ' +
+    shellQuote('approval_policy="never"') +
+    ' --cd ' +
+    shellQuote(WORKSPACE) +
+    model +
+    ' - < ' +
+    shellQuote(promptPath);
+
+  const result = await runCommand(command, {
+    env: buildCodexEnv(),
+    timeoutMs: 1_200_000,
+  });
+  const outputLines = summarizeLines([
+    result.stdout,
+    result.stderr,
+  ]).map((line) => '[' + label + '] ' + line);
+
+  await patchWorkflowRun({
+    codexActivitySummary: outputLines,
+  });
+
+  if (result.exitCode !== 0) {
+    throw new Error(summarizeCommand(result));
+  }
+
+  return outputLines;
+}
+
+async function verifyCommerceWorkspace(options = {}) {
+  const commandEnv = {
+    SITE_NAME: blueprint.storeName,
+    COMPANY_NAME: blueprint.storeName,
+    SHOPIFY_REVALIDATION_SECRET: 'storeforge-workflow',
+    SHOPIFY_STORE_DOMAIN: '',
+    SHOPIFY_STOREFRONT_ACCESS_TOKEN: '',
+  };
+  const commands = [
+    PNPM + ' prettier --write --ignore-unknown .',
+    ...(options.cleanBeforeBuild ? ['rm -rf .next'] : []),
+    PNPM + ' build',
+    PNPM + ' test',
+  ];
+  const results = [];
+
+  for (const command of commands) {
+    const result = await runCommand(command, {
+      env: commandEnv,
+      timeoutMs: 600_000,
+    });
+    results.push(result);
+
+    if (result.exitCode !== 0) {
+      if (options.retryOpaqueBuildFailure && isOpaqueBuildFailure(result)) {
+        const retry = await runCommand(command, {
+          env: commandEnv,
+          timeoutMs: 600_000,
+        });
+        results.push(retry);
+
+        if (retry.exitCode === 0) {
+          continue;
+        }
+
+        return {
+          ok: false,
+          failedCommand: retry,
+          commands: results,
+        };
+      }
+
+      return {
+        ok: false,
+        failedCommand: result,
+        commands: results,
+      };
+    }
+  }
+
+  return {
+    ok: true,
+    failedCommand: null,
+    commands: results,
+  };
+}
+
+function runCommand(command, options) {
+  const startedAt = Date.now();
+
+  return new Promise((resolve, reject) => {
+    const child = spawn('bash', ['-lc', command], {
+      cwd: WORKSPACE,
+      env: {
+        ...process.env,
+        ...options.env,
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    const stdoutChunks = [];
+    const stderrChunks = [];
+    let settled = false;
+
+    const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      child.kill('SIGTERM');
+      resolve({
+        command,
+        exitCode: null,
+        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+        stderr:
+          Buffer.concat(stderrChunks).toString('utf8') +
+          '\nTimed out after ' +
+          options.timeoutMs +
+          'ms',
+        durationMs: Date.now() - startedAt,
+      });
+    }, options.timeoutMs);
+
+    child.stdout.on('data', (chunk) => {
+      stdoutChunks.push(Buffer.from(chunk));
+    });
+    child.stderr.on('data', (chunk) => {
+      stderrChunks.push(Buffer.from(chunk));
+    });
+    child.once('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(error);
+    });
+    child.once('close', (exitCode) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({
+        command,
+        exitCode,
+        stdout: Buffer.concat(stdoutChunks).toString('utf8'),
+        stderr: Buffer.concat(stderrChunks).toString('utf8'),
+        durationMs: Date.now() - startedAt,
+      });
+    });
+  });
+}
+
+async function getModifiedFiles() {
+  const result = await runCommand('git status --short', {
+    timeoutMs: 30_000,
+    env: {},
+  });
+
+  return result.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replace(/^[AMDRCU?! ]+\s+/, ''));
+}
+
+async function getModifiedFileSummary() {
+  const result = await runCommand('git diff --stat', {
+    timeoutMs: 30_000,
+    env: {},
+  });
+
+  return result.stdout
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function buildRepairPrompt({ attempt, command, modifiedFiles }) {
+  return [
+    'You are repairing a StoreForge transformation of Vercel Commerce.',
+    '',
+    'Constraints:',
+    '- Do not rewrite checkout/cart/core commerce infrastructure.',
+    '- Keep repairs small and targeted.',
+    '- Preserve TypeScript correctness and responsive UX.',
+    '- Do not add new dependencies.',
+    '- Formatting runs separately, so focus on the real build/test issue.',
+    '',
+    'Repair attempt ' + attempt + ' of ' + MAX_REPAIR_ATTEMPTS + '.',
+    '',
+    'Failed command:',
+    command.command,
+    '',
+    'Exit code:',
+    String(command.exitCode ?? 'unknown'),
+    '',
+    'Recent stdout:',
+    tail(command.stdout, 8000),
+    '',
+    'Recent stderr:',
+    tail(command.stderr, 8000),
+    '',
+    'Modified files:',
+    modifiedFiles.length ? modifiedFiles.join('\n') : 'None detected',
+    '',
+    'Fix only the cause of this failure, then stop.',
+  ].join('\n');
+}
+
+async function patchWorkflowRun(patch) {
+  const body = mapWorkflowRunPatch(patch);
+
+  if (Object.keys(body).length === 0) {
+    return;
+  }
+
+  await supabasePatch('/rest/v1/workflow_runs?id=eq.' + workflowRunId, body);
+}
+
+async function patchStoreStatus(status) {
+  await supabasePatch('/rest/v1/stores?id=eq.' + storeId, {
+    status,
+    updated_at: new Date().toISOString(),
+  });
+}
+
+async function supabasePatch(path, body) {
+  const response = await fetch(supabaseUrl + path, {
+    method: 'PATCH',
+    headers: {
+      apikey: supabaseServiceRoleKey,
+      authorization: 'Bearer ' + supabaseServiceRoleKey,
+      'content-type': 'application/json',
+      prefer: 'return=minimal',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      'Supabase PATCH failed: ' +
+        response.status +
+        ' ' +
+        (await response.text()),
+    );
+  }
+}
+
+function mapWorkflowRunPatch(patch) {
+  const update = {};
+
+  if ('providerRunId' in patch) update.provider_run_id = patch.providerRunId;
+  if ('status' in patch) update.status = patch.status;
+  if ('currentStep' in patch) update.current_step = patch.currentStep;
+  if ('repairCount' in patch) update.repair_count = patch.repairCount;
+  if ('logsSummary' in patch) update.logs_summary = patch.logsSummary;
+  if ('modifiedFilesSummary' in patch) {
+    update.modified_files_summary = patch.modifiedFilesSummary;
+  }
+  if ('codexActivitySummary' in patch) {
+    update.codex_activity_summary = patch.codexActivitySummary;
+  }
+  if ('workspacePath' in patch) update.workspace_path = patch.workspacePath;
+  if ('artifactMetadata' in patch) update.artifact_metadata = patch.artifactMetadata;
+  if ('completedAt' in patch) update.completed_at = patch.completedAt;
+  if ('errorMessage' in patch) update.error_message = patch.errorMessage;
+
+  return update;
+}
+
+function summarizeCommand(command) {
+  return [
+    command.command +
+      ' exited ' +
+      (command.exitCode ?? 'unknown') +
+      ' in ' +
+      Math.round(command.durationMs / 1000) +
+      's',
+    tail(formatCommandOutput(command), 12000),
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function serializeCommandResult(command) {
+  return {
+    command: command.command,
+    exitCode: command.exitCode,
+    durationMs: command.durationMs,
+    stdout: command.stdout,
+    stderr: command.stderr,
+    output: formatCommandOutput(command),
+  };
+}
+
+function formatCommandOutput(command) {
+  return [
+    command.stdout ? 'stdout:\n' + command.stdout : '',
+    command.stderr ? 'stderr:\n' + command.stderr : '',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function summarizeLines(lines, maxLines = 80) {
+  return lines
+    .flatMap((line) => String(line).split('\n'))
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .slice(-maxLines);
+}
+
+function isOpaqueBuildFailure(command) {
+  if (!command.command.includes(' build') || command.exitCode === 0) {
+    return false;
+  }
+
+  const output = formatCommandOutput(command);
+
+  return (
+    output.includes('ELIFECYCLE') &&
+    !/error[:\s]|failed to compile|type error|syntaxerror|referenceerror|module not found/i.test(
+      output,
+    )
+  );
+}
+
+function buildCodexEnv() {
+  const env = {};
+
+  if (process.env.CODEX_API_KEY) {
+    env.CODEX_API_KEY = process.env.CODEX_API_KEY;
+    env.OPENAI_API_KEY = process.env.CODEX_API_KEY;
+  }
+
+  if (process.env.CODEX_BASE_URL) {
+    env.CODEX_BASE_URL = process.env.CODEX_BASE_URL;
+    env.OPENAI_BASE_URL = process.env.CODEX_BASE_URL;
+  }
+
+  return env;
+}
+
+function requiredEnv(key) {
+  const value = process.env[key];
+
+  if (!value) {
+    throw new Error('Missing required environment variable: ' + key);
+  }
+
+  return value;
+}
+
+function formatUnknownError(error) {
+  if (error instanceof Error) {
+    return error.stack ? error.message + '\n' + error.stack : error.message;
+  }
+
+  if (typeof error === 'string') {
+    return error;
+  }
+
+  try {
+    return JSON.stringify(error, null, 2);
+  } catch {
+    return String(error);
+  }
+}
+
+function shellQuote(value) {
+  return "'" + String(value).replaceAll("'", "'\\''") + "'";
+}
+
+function tail(value, maxLength = 2000) {
+  value = String(value ?? '');
+
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  return value.slice(value.length - maxLength);
+}
+`;
 }
 
 async function prepareWorkspace(
