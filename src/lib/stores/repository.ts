@@ -17,6 +17,18 @@ type UpdateStoreBlueprintInput = {
   blueprint: StoreBlueprint;
 };
 
+type StoreDashboardInput = {
+  userId: string;
+  limit?: number;
+};
+
+export type StoreDashboardData = {
+  stores: Awaited<ReturnType<typeof mapStoreRow>>[];
+  storeCount: number;
+  workflowRunCount: number;
+  deploymentCount: number;
+};
+
 export async function createStoreJob({
   userId,
   originalPrompt,
@@ -93,6 +105,74 @@ export async function updateStoreBlueprint({
   }
 
   return mapStoreRow(data);
+}
+
+export async function getStoreDashboardData({
+  userId,
+  limit = 20,
+}: StoreDashboardInput): Promise<StoreDashboardData> {
+  const supabase = getSupabaseAdminClient();
+
+  const { data: storeIds, error: storeIdsError } = await supabase
+    .from("stores")
+    .select("id")
+    .eq("clerk_user_id", userId);
+
+  if (storeIdsError) {
+    throw new Error(`Failed to load dashboard store ids: ${storeIdsError.message}`);
+  }
+
+  const ids = storeIds.map((store) => store.id);
+  const [latestStores, workflowRunCount, deploymentCount] = await Promise.all([
+    getLatestStoresForUser(userId, limit),
+    countRowsForStoreIds("workflow_runs", ids),
+    countRowsForStoreIds("deployment_metadata", ids),
+  ]);
+
+  return {
+    stores: latestStores,
+    storeCount: ids.length,
+    workflowRunCount,
+    deploymentCount,
+  };
+}
+
+async function getLatestStoresForUser(userId: string, limit: number) {
+  const supabase = getSupabaseAdminClient();
+
+  const { data, error } = await supabase
+    .from("stores")
+    .select("*")
+    .eq("clerk_user_id", userId)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+
+  if (error) {
+    throw new Error(`Failed to load dashboard stores: ${error.message}`);
+  }
+
+  return data.map(mapStoreRow);
+}
+
+async function countRowsForStoreIds(
+  table: "workflow_runs" | "deployment_metadata",
+  storeIds: string[],
+) {
+  if (!storeIds.length) {
+    return 0;
+  }
+
+  const supabase = getSupabaseAdminClient();
+  const { count, error } = await supabase
+    .from(table)
+    .select("id", { count: "exact", head: true })
+    .in("store_id", storeIds);
+
+  if (error) {
+    throw new Error(`Failed to count ${table}: ${error.message}`);
+  }
+
+  return count ?? 0;
 }
 
 function mapStoreRow(row: Database["public"]["Tables"]["stores"]["Row"]) {

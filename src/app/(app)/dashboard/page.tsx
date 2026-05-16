@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { ArrowRight, GitBranch, Rocket, Store, Workflow } from "lucide-react";
+import { auth } from "@clerk/nextjs/server";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -19,30 +20,30 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { getStoreDashboardData } from "@/lib/stores/repository";
 
-const recentStores = [
-  {
-    id: "demo-store",
-    name: "Demo Store",
-    status: "draft",
-    products: 3,
-    repo: "pending",
-    deployment: "pending",
-  },
-];
+export default async function DashboardPage() {
+  const userId = await getCurrentUserId();
+  const dashboard = userId
+    ? await getStoreDashboardData({ userId, limit: 20 })
+    : {
+        stores: [],
+        storeCount: 0,
+        workflowRunCount: 0,
+        deploymentCount: 0,
+      };
+  const latestStore = dashboard.stores[0];
 
-export default function DashboardPage() {
   return (
     <div className="space-y-8">
       <section className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="space-y-2">
-          <Badge variant="secondary">Demo scaffold</Badge>
           <h1 className="text-3xl font-semibold tracking-normal">
             StoreForge AI
           </h1>
           <p className="max-w-2xl text-sm text-muted-foreground">
-            Build status, generated repositories, and deployments will surface
-            here as the workflow integrations come online.
+            Build status, generated repositories, and deployments across your
+            generated storefronts.
           </p>
         </div>
         <Button asChild>
@@ -63,7 +64,7 @@ export default function DashboardPage() {
             <CardDescription>Generated storefronts</CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-3xl font-semibold">1</p>
+            <p className="text-3xl font-semibold">{dashboard.storeCount}</p>
           </CardContent>
         </Card>
         <Card>
@@ -75,7 +76,9 @@ export default function DashboardPage() {
             <CardDescription>Workflow executions</CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-3xl font-semibold">0</p>
+            <p className="text-3xl font-semibold">
+              {dashboard.workflowRunCount}
+            </p>
           </CardContent>
         </Card>
         <Card>
@@ -87,7 +90,9 @@ export default function DashboardPage() {
             <CardDescription>Vercel deployment records</CardDescription>
           </CardHeader>
           <CardContent>
-            <p className="text-3xl font-semibold">0</p>
+            <p className="text-3xl font-semibold">
+              {dashboard.deploymentCount}
+            </p>
           </CardContent>
         </Card>
       </section>
@@ -96,49 +101,115 @@ export default function DashboardPage() {
         <CardHeader>
           <CardTitle>Recent Stores</CardTitle>
           <CardDescription>
-            Placeholder data until Supabase persistence is connected.
+            Latest {Math.min(dashboard.stores.length, 20)} storefront
+            {dashboard.stores.length === 1 ? "" : "s"} saved in Supabase.
           </CardDescription>
           <CardAction>
             <Button variant="outline" size="sm" asChild>
-              <Link href="/stores/demo-store/status">
-                View status
+              <Link
+                href={
+                  latestStore
+                    ? `/stores/${latestStore.id}/status`
+                    : "/create-store"
+                }
+              >
+                {latestStore ? "View latest status" : "Create store"}
                 <ArrowRight />
               </Link>
             </Button>
           </CardAction>
         </CardHeader>
         <CardContent>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Name</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Products</TableHead>
-                <TableHead>Repository</TableHead>
-                <TableHead>Deployment</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {recentStores.map((store) => (
-                <TableRow key={store.id}>
-                  <TableCell className="font-medium">{store.name}</TableCell>
-                  <TableCell>
-                    <Badge variant="outline">{store.status}</Badge>
-                  </TableCell>
-                  <TableCell>{store.products}</TableCell>
-                  <TableCell className="font-mono text-xs text-muted-foreground">
-                    <span className="inline-flex items-center gap-1">
-                      <GitBranch className="size-3" />
-                      {store.repo}
-                    </span>
-                  </TableCell>
-                  <TableCell>{store.deployment}</TableCell>
+          {dashboard.stores.length ? (
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Products</TableHead>
+                  <TableHead>Repository</TableHead>
+                  <TableHead>Deployment</TableHead>
+                  <TableHead className="text-right">Status</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {dashboard.stores.map((store) => (
+                  <TableRow key={store.id}>
+                    <TableCell className="font-medium">
+                      <Link
+                        className="hover:underline"
+                        href={`/stores/${store.id}`}
+                      >
+                        {store.name}
+                      </Link>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="outline">{store.status}</Badge>
+                    </TableCell>
+                    <TableCell>{store.productCount}</TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      <span className="inline-flex items-center gap-1">
+                        <GitBranch className="size-3" />
+                        {store.generatedRepoFullName ?? "pending"}
+                      </span>
+                    </TableCell>
+                    <TableCell>{formatDeploymentLabel(store.status)}</TableCell>
+                    <TableCell className="text-right">
+                      <Button variant="outline" size="sm" asChild>
+                        <Link href={`/stores/${store.id}/status`}>
+                          View
+                          <ArrowRight />
+                        </Link>
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          ) : (
+            <div className="flex min-h-48 flex-col items-center justify-center gap-4 rounded-md border border-dashed text-center">
+              <div className="space-y-2">
+                <p className="text-sm font-medium">No stores yet</p>
+                <p className="max-w-sm text-sm text-muted-foreground">
+                  Create your first storefront blueprint and it will appear here
+                  automatically.
+                </p>
+              </div>
+              <Button asChild>
+                <Link href="/create-store">
+                  Create store
+                  <ArrowRight />
+                </Link>
+              </Button>
+            </div>
+          )}
         </CardContent>
       </Card>
     </div>
   );
+}
+
+async function getCurrentUserId() {
+  if (
+    !process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
+    !process.env.CLERK_SECRET_KEY
+  ) {
+    return "dev-user";
+  }
+
+  const session = await auth();
+
+  return session.userId;
+}
+
+function formatDeploymentLabel(status: string) {
+  if (status === "deployed") {
+    return "ready";
+  }
+
+  if (status === "deploying") {
+    return "deploying";
+  }
+
+  return "pending";
 }
