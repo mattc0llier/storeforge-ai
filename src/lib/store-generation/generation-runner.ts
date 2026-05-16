@@ -454,6 +454,7 @@ async function main() {
 
   const modifiedFiles = await getModifiedFiles();
   const modifiedFilesSummary = await getModifiedFileSummary();
+  const generatedDiff = await getGeneratedDiff();
   const commandResults = verification.commands.map((command) => ({
     command: command.command,
     exitCode: command.exitCode,
@@ -477,6 +478,7 @@ async function main() {
         ? serializeCommandResult(verification.failedCommand)
         : null,
       modifiedFiles,
+      generatedDiff,
       sandboxWorkspacePath: WORKSPACE,
     },
     completedAt: new Date().toISOString(),
@@ -1032,6 +1034,15 @@ async function getModifiedFileSummary() {
     .filter(Boolean);
 }
 
+async function getGeneratedDiff() {
+  const result = await runCommand('git diff --no-ext-diff --unified=40 -- .', {
+    timeoutMs: 30_000,
+    env: {},
+  });
+
+  return truncateGeneratedDiff(result.stdout);
+}
+
 function buildRepairPrompt({ attempt, command, modifiedFiles }) {
   return [
     'You are repairing a StoreForge transformation of Vercel Commerce.',
@@ -1279,6 +1290,23 @@ function tail(value, maxLength = 2000) {
   }
 
   return value.slice(value.length - maxLength);
+}
+
+function truncateGeneratedDiff(value, maxLength = 120000) {
+  value = String(value ?? '');
+
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const headLength = Math.floor(maxLength * 0.7);
+  const tailLength = maxLength - headLength;
+
+  return [
+    value.slice(0, headLength),
+    '\n\n[StoreForge truncated generated diff]\n\n',
+    value.slice(value.length - tailLength),
+  ].join('');
 }
 `;
 }
@@ -1604,6 +1632,7 @@ async function validateAndRepairWorkspace(
 
   const modifiedFiles = await getModifiedFiles(workspacePath);
   const modifiedFilesSummary = await getModifiedFileSummary(workspacePath);
+  const generatedDiff = await getGeneratedDiff(workspacePath);
 
   await updateWorkflowRun(input.workflowRunId, {
     currentStep: verification.ok ? "preparing_deployment" : "failed",
@@ -1622,6 +1651,7 @@ async function validateAndRepairWorkspace(
         ? serializeCommandResult(verification.failedCommand)
         : null,
       modifiedFiles,
+      generatedDiff,
     },
   });
 
@@ -1646,6 +1676,7 @@ async function validateAndRepairWorkspace(
     repairAttemptsUsed,
     modifiedFiles,
     modifiedFilesSummary,
+    generatedDiff,
     logsSummary,
     codexActivity,
   };
@@ -1679,6 +1710,7 @@ async function persistGeneratedArtifactMetadata({
     buildResult: "passed",
     repairAttemptsUsed: validation.repairAttemptsUsed,
     modifiedFiles: validation.modifiedFiles,
+    generatedDiff: validation.generatedDiff,
   };
 
   await updateWorkflowRun(input.workflowRunId, {
@@ -1895,6 +1927,15 @@ async function getModifiedFileSummary(workspacePath: string) {
     .filter(Boolean);
 }
 
+async function getGeneratedDiff(workspacePath: string) {
+  const result = await runCommand("git diff --no-ext-diff --unified=40 -- .", {
+    cwd: workspacePath,
+    timeoutMs: 30000,
+  });
+
+  return truncateGeneratedDiff(result.stdout);
+}
+
 function runCommand(
   command: string,
   options: {
@@ -2071,6 +2112,21 @@ function tail(value: string, maxLength = 2000) {
   }
 
   return value.slice(value.length - maxLength);
+}
+
+function truncateGeneratedDiff(value: string, maxLength = 120000) {
+  if (value.length <= maxLength) {
+    return value;
+  }
+
+  const headLength = Math.floor(maxLength * 0.7);
+  const tailLength = maxLength - headLength;
+
+  return [
+    value.slice(0, headLength),
+    "\n\n[StoreForge truncated generated diff]\n\n",
+    value.slice(value.length - tailLength),
+  ].join("");
 }
 
 function shellQuote(value: string) {

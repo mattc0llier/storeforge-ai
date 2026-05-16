@@ -121,6 +121,7 @@ export function WorkflowStatusPanel({
   }, [workflowRun]);
 
   const modifiedFiles = getArtifactStringArray(workflowRun, "modifiedFiles");
+  const generatedDiff = getArtifactString(workflowRun, "generatedDiff");
   const failedCommandOutput = getFailedCommandOutput(workflowRun);
   const timing = getWorkflowTiming(workflowEvents);
 
@@ -280,6 +281,16 @@ export function WorkflowStatusPanel({
                   : workflowRun?.modifiedFilesSummary
               }
             />
+          </details>
+
+          <details className="rounded-md border p-4">
+            <summary className="cursor-pointer text-sm font-medium">
+              Generated code diff
+            </summary>
+            <pre className="mt-3 max-h-[36rem] overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-xs leading-5 text-muted-foreground">
+              {generatedDiff ||
+                "Generated code diff will appear after the next successful transformation."}
+            </pre>
           </details>
 
           <details className="rounded-md border p-4">
@@ -445,6 +456,12 @@ function getArtifactStringArray(workflowRun: WorkflowRun | null, key: string) {
   }
 
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function getArtifactString(workflowRun: WorkflowRun | null, key: string) {
+  const value = workflowRun?.artifactMetadata[key];
+
+  return typeof value === "string" ? value : "";
 }
 
 function getFailedCommandOutput(workflowRun: WorkflowRun | null) {
