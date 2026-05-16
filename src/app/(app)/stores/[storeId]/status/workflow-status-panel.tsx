@@ -116,6 +116,7 @@ export function WorkflowStatusPanel({
   }, [workflowRun]);
 
   const modifiedFiles = getArtifactStringArray(workflowRun, "modifiedFiles");
+  const failedCommandOutput = getFailedCommandOutput(workflowRun);
 
   return (
     <div className="space-y-6">
@@ -199,6 +200,17 @@ export function WorkflowStatusPanel({
               items={workflowRun?.logsSummary}
             />
           </details>
+
+          {failedCommandOutput ? (
+            <details className="rounded-md border border-destructive/40 p-4">
+              <summary className="cursor-pointer text-sm font-medium text-destructive">
+                Failed command output
+              </summary>
+              <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-md bg-destructive/10 p-3 text-xs leading-5 text-destructive">
+                {failedCommandOutput}
+              </pre>
+            </details>
+          ) : null}
 
           <details className="rounded-md border p-4">
             <summary className="cursor-pointer text-sm font-medium">
@@ -324,4 +336,16 @@ function getArtifactStringArray(workflowRun: WorkflowRun | null, key: string) {
   }
 
   return value.filter((item): item is string => typeof item === "string");
+}
+
+function getFailedCommandOutput(workflowRun: WorkflowRun | null) {
+  const value = workflowRun?.artifactMetadata.failedCommandOutput;
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  const output = "output" in value ? value.output : null;
+
+  return typeof output === "string" && output.trim() ? output : null;
 }
