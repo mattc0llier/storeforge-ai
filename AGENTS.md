@@ -1,9 +1,11 @@
 # AGENTS.md
 
 <!-- BEGIN:nextjs-agent-rules -->
+
 # This is NOT the Next.js you know
 
 This version has breaking changes - APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` before writing any code. Heed deprecation notices.
+
 <!-- END:nextjs-agent-rules -->
 
 ## Project Goal
@@ -170,7 +172,7 @@ When validating a generated Commerce workspace:
 - For the current Commerce template, `pnpm test` is `prettier --check`; a
   failed test may only mean formatting drift, not broken product behavior.
 - Always run formatting before every validation pass:
-  `pnpm prettier --write --ignore-unknown .`
+  `pnpm exec prettier --write --ignore-unknown .`
 - Then run `pnpm build` and `pnpm test`.
 - Run Commerce install/build/test commands with a clean child process
   environment. Do not inherit StoreForge's Next dev server variables such as

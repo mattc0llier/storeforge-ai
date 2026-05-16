@@ -340,7 +340,7 @@ async function main() {
   await patchStoreStatus('generating');
   await patchWorkflowRun({
     status: 'running',
-    currentStep: 'products',
+    currentStep: 'workspace',
     workspacePath: WORKSPACE,
     logsSummary: ['Sandbox generation job started'],
     artifactMetadata: {
@@ -349,6 +349,23 @@ async function main() {
       sandboxWorkspacePath: WORKSPACE,
     },
   });
+  await emitEvent('workspace', 'running', 'Checking Commerce dependencies');
+  const install = await ensureDependencies();
+  await patchWorkflowRun({
+    currentStep: 'products',
+    logsSummary: summarizeLines([
+      'Sandbox generation job started',
+      summarizeCommand(install),
+    ]),
+  });
+  await emitEvent(
+    'workspace',
+    'succeeded',
+    install.exitCode === 0 && install.stdout.includes('node_modules present')
+      ? 'Commerce dependencies already present'
+      : 'Commerce dependencies installed',
+    { durationMs: install.durationMs },
+  );
   await emitEvent('products', 'running', 'Sandbox generation job started');
 
   await patchWorkflowRun({
@@ -530,7 +547,7 @@ async function verifyCommerceWorkspace(options = {}) {
     SHOPIFY_STOREFRONT_ACCESS_TOKEN: '',
   };
   const commands = [
-    PNPM + ' prettier --write --ignore-unknown .',
+    PNPM + ' exec prettier --write --ignore-unknown .',
     ...(options.cleanBeforeBuild ? ['rm -rf .next'] : []),
     PNPM + ' build',
     PNPM + ' test',
@@ -576,6 +593,22 @@ async function verifyCommerceWorkspace(options = {}) {
     failedCommand: null,
     commands: results,
   };
+}
+
+async function ensureDependencies() {
+  const check = await runCommand('test -d node_modules && echo node_modules present', {
+    env: {},
+    timeoutMs: 30_000,
+  });
+
+  if (check.exitCode === 0) {
+    return check;
+  }
+
+  return runCommand(PNPM + ' install --frozen-lockfile', {
+    env: buildInstallEnv(),
+    timeoutMs: 600_000,
+  });
 }
 
 function runCommand(command, options) {
@@ -864,6 +897,12 @@ function buildCodexEnv() {
   }
 
   return env;
+}
+
+function buildInstallEnv() {
+  return {
+    COREPACK_ENABLE_DOWNLOAD_PROMPT: '0',
+  };
 }
 
 function requiredEnv(key) {
@@ -1443,7 +1482,7 @@ async function verifyCommerceWorkspace(
     SHOPIFY_STOREFRONT_ACCESS_TOKEN: "",
   };
   const commands = [
-    `${PNPM} prettier --write --ignore-unknown .`,
+    `${PNPM} exec prettier --write --ignore-unknown .`,
     ...(options.cleanBeforeBuild ? ["rm -rf .next"] : []),
     `${PNPM} build`,
     `${PNPM} test`,
