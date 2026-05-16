@@ -4,7 +4,7 @@ import { CreateStoreHero } from "@/app/(app)/create-store/create-store-hero";
 export default function HomePage() {
   return (
     <AppShell>
-      <CreateStoreHero />
+      <CreateStoreHero showShowcaseImage />
     </AppShell>
   );
 }
