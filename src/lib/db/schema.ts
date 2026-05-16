@@ -23,6 +23,14 @@ export const WorkflowRunStatusSchema = z.enum([
   "canceled",
 ]);
 
+export const WorkflowEventStatusSchema = z.enum([
+  "queued",
+  "running",
+  "succeeded",
+  "failed",
+  "info",
+]);
+
 export const DeploymentStatusSchema = z.enum([
   "queued",
   "building",
@@ -67,6 +75,22 @@ export const WorkflowRunSchema = z.object({
   errorMessage: z.string().nullable(),
 });
 
+export const WorkflowEventSchema = z.object({
+  id: z.uuid(),
+  workflowRunId: z.uuid(),
+  storeId: z.uuid(),
+  traceId: z.string().min(1),
+  spanId: z.string().min(1),
+  parentSpanId: z.string().nullable(),
+  eventName: z.string().min(1),
+  step: z.string().min(1),
+  status: WorkflowEventStatusSchema,
+  message: z.string().min(1),
+  durationMs: z.number().int().min(0).nullable(),
+  attributes: JsonObjectSchema,
+  createdAt: TimestampSchema,
+});
+
 export const DeploymentMetadataSchema = z.object({
   id: z.uuid(),
   storeId: z.uuid(),
@@ -83,7 +107,9 @@ export const DeploymentMetadataSchema = z.object({
 
 export type StoreStatus = z.infer<typeof StoreStatusSchema>;
 export type WorkflowRunStatus = z.infer<typeof WorkflowRunStatusSchema>;
+export type WorkflowEventStatus = z.infer<typeof WorkflowEventStatusSchema>;
 export type DeploymentStatus = z.infer<typeof DeploymentStatusSchema>;
 export type Store = z.infer<typeof StoreSchema>;
 export type WorkflowRun = z.infer<typeof WorkflowRunSchema>;
+export type WorkflowEvent = z.infer<typeof WorkflowEventSchema>;
 export type DeploymentMetadata = z.infer<typeof DeploymentMetadataSchema>;

@@ -1,6 +1,7 @@
 import type {
   DeploymentStatus,
   StoreStatus,
+  WorkflowEventStatus,
   WorkflowRunStatus,
 } from "@/lib/db/schema";
 
@@ -88,10 +89,63 @@ export interface Database {
           completed_at?: string | null;
           error_message?: string | null;
         };
-        Update: Partial<Database["public"]["Tables"]["workflow_runs"]["Insert"]>;
+        Update: Partial<
+          Database["public"]["Tables"]["workflow_runs"]["Insert"]
+        >;
         Relationships: [
           {
             foreignKeyName: "workflow_runs_store_id_fkey";
+            columns: ["store_id"];
+            isOneToOne: false;
+            referencedRelation: "stores";
+            referencedColumns: ["id"];
+          },
+        ];
+      };
+      workflow_events: {
+        Row: {
+          id: string;
+          workflow_run_id: string;
+          store_id: string;
+          trace_id: string;
+          span_id: string;
+          parent_span_id: string | null;
+          event_name: string;
+          step: string;
+          status: WorkflowEventStatus;
+          message: string;
+          duration_ms: number | null;
+          attributes: Json;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          workflow_run_id: string;
+          store_id: string;
+          trace_id: string;
+          span_id?: string;
+          parent_span_id?: string | null;
+          event_name: string;
+          step: string;
+          status: WorkflowEventStatus;
+          message: string;
+          duration_ms?: number | null;
+          attributes?: Json;
+          created_at?: string;
+        };
+        Update: Partial<
+          Database["public"]["Tables"]["workflow_events"]["Insert"]
+        >;
+        Relationships: [
+          {
+            foreignKeyName: "workflow_events_workflow_run_id_fkey";
+            columns: ["workflow_run_id"];
+            isOneToOne: false;
+            referencedRelation: "workflow_runs";
+            referencedColumns: ["id"];
+          },
+          {
+            foreignKeyName: "workflow_events_store_id_fkey";
             columns: ["store_id"];
             isOneToOne: false;
             referencedRelation: "stores";

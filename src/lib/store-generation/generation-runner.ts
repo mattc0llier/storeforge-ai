@@ -18,6 +18,7 @@ import {
 } from "../../../prompts/codex-transform";
 import { getStoreJob } from "../stores/repository";
 import {
+  createWorkflowEvent,
   updateStoreStatus,
   updateWorkflowRun,
 } from "../stores/workflow-runs";
@@ -122,7 +123,12 @@ async function startSandboxStoreGeneration(
 ): Promise<StoreGenerationRunResult> {
   try {
     console.log(`[generate-store] sandbox START store=${input.storeId}`);
-    await emitProgress("workspace", "running", "Starting Vercel Sandbox");
+    await emitWorkflowEvent(
+      input,
+      "workspace",
+      "running",
+      "Starting Vercel Sandbox",
+    );
     await updateStoreStatus(input.storeId, "generating");
     await updateWorkflowRun(input.workflowRunId, {
       status: "running",
@@ -199,12 +205,15 @@ async function startSandboxStoreGeneration(
       },
     });
 
-    await emitProgress(
+    await emitWorkflowEvent(
+      input,
       "workspace",
       "succeeded",
       `Vercel Sandbox ${sandbox.sandboxId} started`,
     );
-    console.log(`[generate-store] sandbox STARTED sandbox=${sandbox.sandboxId}`);
+    console.log(
+      `[generate-store] sandbox STARTED sandbox=${sandbox.sandboxId}`,
+    );
 
     return {
       success: true,
@@ -279,8 +288,7 @@ function getSandboxJobEnvironment(input: StoreGenerationRunInput) {
     OPENAI_API_KEY: process.env.CODEX_API_KEY,
     CODEX_BASE_URL: process.env.CODEX_BASE_URL,
     CODEX_MODEL: process.env.CODEX_MODEL,
-    CODEX_CLI_PACKAGE:
-      process.env.CODEX_CLI_PACKAGE ?? "@openai/codex@0.130.0",
+    CODEX_CLI_PACKAGE: process.env.CODEX_CLI_PACKAGE ?? "@openai/codex@0.130.0",
     PNPM_VERSION: "10.33.0",
   });
 }
@@ -322,6 +330,7 @@ await main().catch(async (error) => {
     errorMessage: message,
     logsSummary: summarizeLines([message]),
   }).catch(() => null);
+  await emitEvent('failed', 'failed', message).catch(() => null);
   await patchStoreStatus('failed').catch(() => null);
   console.error(message);
   process.exitCode = 1;
@@ -340,22 +349,26 @@ async function main() {
       sandboxWorkspacePath: WORKSPACE,
     },
   });
+  await emitEvent('products', 'running', 'Sandbox generation job started');
 
   await patchWorkflowRun({
     currentStep: 'codex',
     logsSummary: ['Product metadata prepared', 'Starting Codex transformation'],
   });
+  await emitEvent('codex', 'running', 'Starting Codex transformation');
 
   const transformActivity = await runCodex({
     label: 'transform',
     promptPath: TRANSFORM_PROMPT_PATH,
   });
+  await emitEvent('codex', 'succeeded', 'Codex transformation finished');
 
   await patchWorkflowRun({
     currentStep: 'build',
     codexActivitySummary: summarizeLines(transformActivity),
     logsSummary: ['Codex transformation finished', 'Running Commerce validation'],
   });
+  await emitEvent('build', 'running', 'Running Commerce validation');
 
   let repairAttemptsUsed = 0;
   let verification = await verifyCommerceWorkspace({
@@ -376,6 +389,12 @@ async function main() {
       repairCount: repairAttemptsUsed,
       logsSummary: summarizeLines(logsSummary),
     });
+    await emitEvent(
+      'repair',
+      'running',
+      'Repairing build issues (' + repairAttemptsUsed + '/' + MAX_REPAIR_ATTEMPTS + ')',
+      { repairAttempt: repairAttemptsUsed },
+    );
 
     const modifiedFiles = await getModifiedFiles();
     const repairPromptPath = '/tmp/storeforge-repair-' + repairAttemptsUsed + '.txt';
@@ -408,6 +427,7 @@ async function main() {
         'Running final clean validation before failing',
       ]),
     });
+    await emitEvent('build', 'running', 'Running final clean validation before failing');
     verification = await verifyCommerceWorkspace({
       cleanBeforeBuild: true,
       retryOpaqueBuildFailure: true,
@@ -447,6 +467,14 @@ async function main() {
       ? null
       : 'Commerce verification failed after ' + repairAttemptsUsed + ' repair attempts',
   });
+  await emitEvent(
+    verification.ok ? 'preparing_deployment' : 'failed',
+    verification.ok ? 'succeeded' : 'failed',
+    verification.ok
+      ? 'Repository artifact metadata persisted'
+      : 'Commerce verification failed',
+    { repairAttemptsUsed },
+  );
 
   await patchStoreStatus(verification.ok ? 'generated' : 'failed');
 
@@ -677,11 +705,48 @@ async function patchWorkflowRun(patch) {
   await supabasePatch('/rest/v1/workflow_runs?id=eq.' + workflowRunId, body);
 }
 
+async function emitEvent(step, status, message, attributes = {}) {
+  await supabaseInsert('/rest/v1/workflow_events', {
+    workflow_run_id: workflowRunId,
+    store_id: storeId,
+    trace_id: workflowRunId,
+    event_name: 'storeforge.' + step + '.' + status,
+    step,
+    status,
+    message,
+    attributes,
+  }).catch((error) => {
+    console.warn('[workflow-events] failed to record event', error);
+  });
+}
+
 async function patchStoreStatus(status) {
   await supabasePatch('/rest/v1/stores?id=eq.' + storeId, {
     status,
     updated_at: new Date().toISOString(),
   });
+}
+
+async function supabaseInsert(path, body) {
+  const response = await fetch(supabaseUrl + path, {
+    method: 'POST',
+    headers: {
+      apikey: supabaseServiceRoleKey,
+      authorization: 'Bearer ' + supabaseServiceRoleKey,
+      'content-type': 'application/json',
+      prefer: 'return=minimal',
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      'Supabase POST failed: ' +
+        response.status +
+        ' ' +
+        (await response.text()),
+    );
+  }
 }
 
 async function supabasePatch(path, body) {
@@ -847,7 +912,12 @@ async function prepareWorkspace(
   input: StoreGenerationRunInput,
 ): Promise<PreparedWorkspace> {
   console.log(`[generate-store] prepareWorkspace START store=${input.storeId}`);
-  await emitProgress("workspace", "running", "Preparing Commerce workspace");
+  await emitWorkflowEvent(
+    input,
+    "workspace",
+    "running",
+    "Preparing Commerce workspace",
+  );
   await updateStoreStatus(input.storeId, "generating");
   await updateWorkflowRun(input.workflowRunId, {
     status: "running",
@@ -874,11 +944,14 @@ async function prepareWorkspace(
     },
   );
 
-  let install = await runCommand(`${PNPM} install --offline --frozen-lockfile`, {
-    cwd: workspacePath,
-    cleanEnv: true,
-    timeoutMs: 600000,
-  });
+  let install = await runCommand(
+    `${PNPM} install --offline --frozen-lockfile`,
+    {
+      cwd: workspacePath,
+      cleanEnv: true,
+      timeoutMs: 600000,
+    },
+  );
 
   if (install.exitCode !== 0) {
     install = await runRequiredCommand(`${PNPM} install --frozen-lockfile`, {
@@ -893,8 +966,15 @@ async function prepareWorkspace(
     workspacePath,
     logsSummary: [templateLogSummary, installLogSummary],
   });
-  await emitProgress("workspace", "succeeded", "Workspace prepared");
-  console.log(`[generate-store] prepareWorkspace DONE workspace=${workspacePath}`);
+  await emitWorkflowEvent(
+    input,
+    "workspace",
+    "succeeded",
+    "Workspace prepared",
+  );
+  console.log(
+    `[generate-store] prepareWorkspace DONE workspace=${workspacePath}`,
+  );
 
   return {
     root,
@@ -927,11 +1007,14 @@ async function ensureCommerceTemplateCache() {
       },
     );
 
-    const install = await runRequiredCommand(`${PNPM} install --frozen-lockfile`, {
-      cwd: COMMERCE_TEMPLATE_REPO_PATH,
-      cleanEnv: true,
-      timeoutMs: 600000,
-    });
+    const install = await runRequiredCommand(
+      `${PNPM} install --frozen-lockfile`,
+      {
+        cwd: COMMERCE_TEMPLATE_REPO_PATH,
+        cleanEnv: true,
+        timeoutMs: 600000,
+      },
+    );
 
     return [
       `Prepared Commerce template cache at ${COMMERCE_TEMPLATE_REPO_PATH}`,
@@ -957,8 +1040,15 @@ async function ensureCommerceTemplateCache() {
 async function generateProductAssets(
   input: StoreGenerationRunInput,
 ): Promise<ProductAssetMetadata> {
-  console.log(`[generate-store] generateProductAssets START store=${input.storeId}`);
-  await emitProgress("products", "running", "Generating product placeholders");
+  console.log(
+    `[generate-store] generateProductAssets START store=${input.storeId}`,
+  );
+  await emitWorkflowEvent(
+    input,
+    "products",
+    "running",
+    "Generating product placeholders",
+  );
   await updateWorkflowRun(input.workflowRunId, {
     currentStep: "products",
   });
@@ -982,8 +1072,15 @@ async function generateProductAssets(
       heroImagePrompt: store.blueprint.heroImagePrompt,
     },
   });
-  await emitProgress("products", "succeeded", "Product metadata prepared");
-  console.log(`[generate-store] generateProductAssets DONE count=${productAssets.length}`);
+  await emitWorkflowEvent(
+    input,
+    "products",
+    "succeeded",
+    "Product metadata prepared",
+  );
+  console.log(
+    `[generate-store] generateProductAssets DONE count=${productAssets.length}`,
+  );
 
   return productAssets;
 }
@@ -992,8 +1089,15 @@ async function executeCodexTransformation(
   input: StoreGenerationRunInput,
   workspacePath: string,
 ) {
-  console.log(`[generate-store] executeCodexTransformation START store=${input.storeId}`);
-  await emitProgress("codex", "running", "Codex transforming storefront");
+  console.log(
+    `[generate-store] executeCodexTransformation START store=${input.storeId}`,
+  );
+  await emitWorkflowEvent(
+    input,
+    "codex",
+    "running",
+    "Codex transforming storefront",
+  );
   await updateWorkflowRun(input.workflowRunId, {
     currentStep: "codex",
   });
@@ -1014,7 +1118,12 @@ async function executeCodexTransformation(
   await updateWorkflowRun(input.workflowRunId, {
     codexActivitySummary: summarizeLines(activity),
   });
-  await emitProgress("codex", "succeeded", "Codex transformation complete");
+  await emitWorkflowEvent(
+    input,
+    "codex",
+    "succeeded",
+    "Codex transformation complete",
+  );
   console.log("[generate-store] executeCodexTransformation DONE");
 }
 
@@ -1022,8 +1131,15 @@ async function validateAndRepairWorkspace(
   input: StoreGenerationRunInput,
   workspacePath: string,
 ) {
-  console.log(`[generate-store] validateAndRepairWorkspace START store=${input.storeId}`);
-  await emitProgress("build", "running", "Running build and test validation");
+  console.log(
+    `[generate-store] validateAndRepairWorkspace START store=${input.storeId}`,
+  );
+  await emitWorkflowEvent(
+    input,
+    "build",
+    "running",
+    "Running build and test validation",
+  );
   await updateWorkflowRun(input.workflowRunId, {
     currentStep: "build",
   });
@@ -1035,9 +1151,13 @@ async function validateAndRepairWorkspace(
   }
 
   let repairAttemptsUsed = 0;
-  let verification = await verifyCommerceWorkspace(workspacePath, store.blueprint.storeName, {
-    retryOpaqueBuildFailure: true,
-  });
+  let verification = await verifyCommerceWorkspace(
+    workspacePath,
+    store.blueprint.storeName,
+    {
+      retryOpaqueBuildFailure: true,
+    },
+  );
   const logsSummary = verification.commands.map(summarizeCommand);
   const codexActivity: string[] = [];
 
@@ -1049,7 +1169,8 @@ async function validateAndRepairWorkspace(
       break;
     }
 
-    await emitProgress(
+    await emitWorkflowEvent(
+      input,
       "repair",
       "running",
       `Repairing build issues (${repairAttemptsUsed}/${MAX_REPAIR_ATTEMPTS})`,
@@ -1088,7 +1209,8 @@ async function validateAndRepairWorkspace(
   }
 
   if (!verification.ok) {
-    await emitProgress(
+    await emitWorkflowEvent(
+      input,
       "build",
       "running",
       "Running final clean validation before failing",
@@ -1134,8 +1256,15 @@ async function validateAndRepairWorkspace(
     );
   }
 
-  await emitProgress("build", "succeeded", "Build and tests passed");
-  console.log(`[generate-store] validateAndRepairWorkspace DONE repairs=${repairAttemptsUsed}`);
+  await emitWorkflowEvent(
+    input,
+    "build",
+    "succeeded",
+    "Build and tests passed",
+  );
+  console.log(
+    `[generate-store] validateAndRepairWorkspace DONE repairs=${repairAttemptsUsed}`,
+  );
 
   return {
     verification,
@@ -1158,8 +1287,11 @@ async function persistGeneratedArtifactMetadata({
   productAssets: ProductAssetMetadata;
   validation: Awaited<ReturnType<typeof validateAndRepairWorkspace>>;
 }): Promise<StoreGenerationRunResult> {
-  console.log(`[generate-store] persistGeneratedArtifactMetadata START store=${input.storeId}`);
-  await emitProgress(
+  console.log(
+    `[generate-store] persistGeneratedArtifactMetadata START store=${input.storeId}`,
+  );
+  await emitWorkflowEvent(
+    input,
     "preparing_deployment",
     "running",
     "Preparing generated repository artifact metadata",
@@ -1186,7 +1318,8 @@ async function persistGeneratedArtifactMetadata({
     completedAt: new Date().toISOString(),
   });
   await updateStoreStatus(input.storeId, "generated");
-  await emitProgress(
+  await emitWorkflowEvent(
+    input,
     "preparing_deployment",
     "succeeded",
     "Repository artifact metadata persisted",
@@ -1215,7 +1348,28 @@ async function markWorkflowFailed(
     errorMessage: message,
   });
   await updateStoreStatus(input.storeId, "failed");
-  await emitProgress("failed", "failed", message);
+  await emitWorkflowEvent(input, "failed", "failed", message);
+}
+
+async function emitWorkflowEvent(
+  input: StoreGenerationRunInput,
+  step: string,
+  status: "running" | "succeeded" | "failed",
+  message: string,
+  attributes: Record<string, unknown> = {},
+) {
+  await emitProgress(step, status, message);
+  await createWorkflowEvent({
+    workflowRunId: input.workflowRunId,
+    storeId: input.storeId,
+    eventName: `storeforge.${step}.${status}`,
+    step,
+    status,
+    message,
+    attributes,
+  }).catch((error: unknown) => {
+    console.warn("[workflow-events] failed to record event", error);
+  });
 }
 
 async function emitProgress(
@@ -1306,10 +1460,7 @@ async function verifyCommerceWorkspace(
     results.push(result);
 
     if (result.exitCode !== 0) {
-      if (
-        options.retryOpaqueBuildFailure &&
-        isOpaqueBuildFailure(result)
-      ) {
+      if (options.retryOpaqueBuildFailure && isOpaqueBuildFailure(result)) {
         const retry = await runCommand(command, {
           cwd: workspacePath,
           cleanEnv: true,
@@ -1588,7 +1739,9 @@ async function pathExists(value: string) {
 
 function formatUnknownError(error: unknown) {
   if (error instanceof Error) {
-    return error.stack ? `${error.message}\n${tail(error.stack)}` : error.message;
+    return error.stack
+      ? `${error.message}\n${tail(error.stack)}`
+      : error.message;
   }
 
   if (typeof error === "string") {

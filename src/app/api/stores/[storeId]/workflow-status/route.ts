@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 
 import { getStoreJob } from "@/lib/stores/repository";
-import { getLatestWorkflowRunForStore } from "@/lib/stores/workflow-runs";
+import {
+  getLatestWorkflowRunForStore,
+  getWorkflowEventsForRun,
+} from "@/lib/stores/workflow-runs";
 
 type WorkflowStatusRouteContext = {
   params: Promise<{ storeId: string }>;
@@ -24,6 +27,13 @@ export async function GET(
     );
   }
 
+  const workflowEvents = workflowRun
+    ? await getWorkflowEventsForRun(workflowRun.id).catch((error: unknown) => {
+        console.warn("[workflow-events] failed to load events", error);
+        return [];
+      })
+    : [];
+
   return NextResponse.json({
     ok: true,
     store: {
@@ -32,5 +42,6 @@ export async function GET(
       status: store.status,
     },
     workflowRun,
+    workflowEvents,
   });
 }

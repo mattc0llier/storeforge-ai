@@ -2,7 +2,10 @@ import { notFound } from "next/navigation";
 
 import { Badge } from "@/components/ui/badge";
 import { getStoreJob } from "@/lib/stores/repository";
-import { getLatestWorkflowRunForStore } from "@/lib/stores/workflow-runs";
+import {
+  getLatestWorkflowRunForStore,
+  getWorkflowEventsForRun,
+} from "@/lib/stores/workflow-runs";
 
 import { WorkflowStatusPanel } from "./workflow-status-panel";
 
@@ -21,6 +24,10 @@ export default async function StoreStatusPage({
     notFound();
   }
 
+  const workflowEvents = workflowRun
+    ? await getWorkflowEventsForRun(workflowRun.id).catch(() => [])
+    : [];
+
   return (
     <div className="mx-auto w-full max-w-5xl space-y-6">
       <div className="space-y-2">
@@ -32,12 +39,13 @@ export default async function StoreStatusPage({
           {store.name} Launch Status
         </h1>
         <p className="text-sm text-muted-foreground">
-          Live generation progress, concise logs, and repository artifact metadata
-          for the autonomous Commerce transformation.
+          Live generation progress, concise logs, and repository artifact
+          metadata for the autonomous Commerce transformation.
         </p>
       </div>
 
       <WorkflowStatusPanel
+        initialWorkflowEvents={workflowEvents}
         initialWorkflowRun={workflowRun}
         storeId={store.id}
       />

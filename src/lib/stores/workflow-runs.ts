@@ -1,6 +1,8 @@
 import {
+  WorkflowEventSchema,
   WorkflowRunSchema,
   type StoreStatus,
+  type WorkflowEventStatus,
   type WorkflowRun,
   type WorkflowRunStatus,
 } from "@/lib/db/schema";
@@ -19,6 +21,18 @@ type WorkflowRunPatch = {
   artifactMetadata?: Record<string, unknown>;
   completedAt?: string | null;
   errorMessage?: string | null;
+};
+
+type WorkflowEventInput = {
+  workflowRunId: string;
+  storeId: string;
+  eventName: string;
+  step: string;
+  status: WorkflowEventStatus;
+  message: string;
+  durationMs?: number | null;
+  attributes?: Record<string, unknown>;
+  parentSpanId?: string | null;
 };
 
 export async function createGenerationWorkflowRun(storeId: string) {
@@ -44,7 +58,19 @@ export async function createGenerationWorkflowRun(storeId: string) {
     throw new Error(`Failed to create workflow run: ${error.message}`);
   }
 
-  return mapWorkflowRunRow(data);
+  const workflowRun = mapWorkflowRunRow(data);
+  await createWorkflowEvent({
+    workflowRunId: workflowRun.id,
+    storeId,
+    eventName: "workflow.queued",
+    step: "queued",
+    status: "queued",
+    message: "Generation workflow queued",
+  }).catch((eventError: unknown) => {
+    console.warn("[workflow-events] failed to record queued event", eventError);
+  });
+
+  return workflowRun;
 }
 
 export async function updateWorkflowRun(
@@ -86,10 +112,7 @@ export async function updateWorkflowRun(
   return mapWorkflowRunRow(data);
 }
 
-export async function updateStoreStatus(
-  storeId: string,
-  status: StoreStatus,
-) {
+export async function updateStoreStatus(storeId: string, status: StoreStatus) {
   const supabase = getSupabaseAdminClient();
   const { error } = await supabase
     .from("stores")
@@ -99,6 +122,59 @@ export async function updateStoreStatus(
   if (error) {
     throw new Error(`Failed to update store status: ${error.message}`);
   }
+}
+
+export async function createWorkflowEvent({
+  workflowRunId,
+  storeId,
+  eventName,
+  step,
+  status,
+  message,
+  durationMs = null,
+  attributes = {},
+  parentSpanId = null,
+}: WorkflowEventInput) {
+  const supabase = getSupabaseAdminClient();
+
+  const { data, error } = await supabase
+    .from("workflow_events")
+    .insert({
+      workflow_run_id: workflowRunId,
+      store_id: storeId,
+      trace_id: workflowRunId,
+      parent_span_id: parentSpanId,
+      event_name: eventName,
+      step,
+      status,
+      message,
+      duration_ms: durationMs,
+      attributes: attributes as Json,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to create workflow event: ${error.message}`);
+  }
+
+  return mapWorkflowEventRow(data);
+}
+
+export async function getWorkflowEventsForRun(workflowRunId: string) {
+  const supabase = getSupabaseAdminClient();
+
+  const { data, error } = await supabase
+    .from("workflow_events")
+    .select("*")
+    .eq("workflow_run_id", workflowRunId)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw new Error(`Failed to load workflow events: ${error.message}`);
+  }
+
+  return data.map(mapWorkflowEventRow);
 }
 
 export async function getLatestWorkflowRunForStore(storeId: string) {
@@ -117,6 +193,26 @@ export async function getLatestWorkflowRunForStore(storeId: string) {
   }
 
   return data ? mapWorkflowRunRow(data) : null;
+}
+
+function mapWorkflowEventRow(
+  row: Database["public"]["Tables"]["workflow_events"]["Row"],
+) {
+  return WorkflowEventSchema.parse({
+    id: row.id,
+    workflowRunId: row.workflow_run_id,
+    storeId: row.store_id,
+    traceId: row.trace_id,
+    spanId: row.span_id,
+    parentSpanId: row.parent_span_id,
+    eventName: row.event_name,
+    step: row.step,
+    status: row.status,
+    message: row.message,
+    durationMs: row.duration_ms,
+    attributes: row.attributes ?? {},
+    createdAt: row.created_at,
+  });
 }
 
 function mapWorkflowRunRow(

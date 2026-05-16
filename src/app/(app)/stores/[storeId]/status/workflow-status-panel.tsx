@@ -18,7 +18,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import type { WorkflowRun } from "@/lib/db/schema";
+import type { WorkflowEvent, WorkflowRun } from "@/lib/db/schema";
 
 type WorkflowStatusPayload = {
   ok: true;
@@ -28,11 +28,13 @@ type WorkflowStatusPayload = {
     status: string;
   };
   workflowRun: WorkflowRun | null;
+  workflowEvents: WorkflowEvent[];
 };
 
 type WorkflowStatusPanelProps = {
   storeId: string;
   initialWorkflowRun: WorkflowRun | null;
+  initialWorkflowEvents: WorkflowEvent[];
 };
 
 const generationSteps = [
@@ -70,9 +72,11 @@ const generationSteps = [
 
 export function WorkflowStatusPanel({
   storeId,
+  initialWorkflowEvents,
   initialWorkflowRun,
 }: WorkflowStatusPanelProps) {
   const [workflowRun, setWorkflowRun] = useState(initialWorkflowRun);
+  const [workflowEvents, setWorkflowEvents] = useState(initialWorkflowEvents);
 
   useEffect(() => {
     let active = true;
@@ -90,6 +94,7 @@ export function WorkflowStatusPanel({
 
       if (active) {
         setWorkflowRun(payload.workflowRun);
+        setWorkflowEvents(payload.workflowEvents);
       }
     }
 
@@ -117,6 +122,7 @@ export function WorkflowStatusPanel({
 
   const modifiedFiles = getArtifactStringArray(workflowRun, "modifiedFiles");
   const failedCommandOutput = getFailedCommandOutput(workflowRun);
+  const timing = getWorkflowTiming(workflowEvents);
 
   return (
     <div className="space-y-6">
@@ -141,7 +147,11 @@ export function WorkflowStatusPanel({
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-center gap-2">
                       <p className="font-medium">{step.label}</p>
-                      <Badge variant={state === "failed" ? "destructive" : "secondary"}>
+                      <Badge
+                        variant={
+                          state === "failed" ? "destructive" : "secondary"
+                        }
+                      >
                         {state}
                       </Badge>
                     </div>
@@ -159,6 +169,77 @@ export function WorkflowStatusPanel({
 
       <Card>
         <CardHeader>
+          <CardTitle>Build Timing</CardTitle>
+          <CardDescription>
+            Persisted workflow events with timestamps for the StoreForge
+            generation trace.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid gap-3 sm:grid-cols-3">
+            <Metric label="Elapsed" value={timing.elapsedLabel} />
+            <Metric label="Events" value={String(workflowEvents.length)} />
+            <Metric
+              label="Trace ID"
+              value={workflowRun?.id.slice(0, 8) ?? "pending"}
+            />
+          </div>
+          <div className="space-y-3">
+            {workflowEvents.length ? (
+              workflowEvents.map((event, index) => {
+                const previous = workflowEvents[index - 1];
+                const delta = previous
+                  ? formatDuration(
+                      new Date(event.createdAt).getTime() -
+                        new Date(previous.createdAt).getTime(),
+                    )
+                  : "+0s";
+
+                return (
+                  <div
+                    key={event.id}
+                    className="grid gap-2 rounded-md border p-3 text-sm sm:grid-cols-[86px_120px_1fr]"
+                  >
+                    <p className="font-mono text-xs text-muted-foreground">
+                      {formatTime(event.createdAt)}
+                    </p>
+                    <div className="flex items-center gap-2">
+                      {renderStepIcon(
+                        event.status === "succeeded"
+                          ? "complete"
+                          : event.status,
+                      )}
+                      <Badge
+                        variant={
+                          event.status === "failed"
+                            ? "destructive"
+                            : "secondary"
+                        }
+                      >
+                        {delta}
+                      </Badge>
+                    </div>
+                    <div className="min-w-0">
+                      <p className="font-medium">{event.message}</p>
+                      <p className="mt-1 break-words font-mono text-xs text-muted-foreground">
+                        {event.eventName}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <p className="rounded-md border p-3 text-sm text-muted-foreground">
+                Workflow events will appear after the latest database migration
+                is applied and a generation starts.
+              </p>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>Technical Details</CardTitle>
           <CardDescription>
             Concise generation metadata for debugging without crowding the
@@ -166,8 +247,14 @@ export function WorkflowStatusPanel({
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
-          <DetailRow label="Generation status" value={workflowRun?.status ?? "not started"} />
-          <DetailRow label="Current step" value={workflowRun?.currentStep ?? "queued"} />
+          <DetailRow
+            label="Generation status"
+            value={workflowRun?.status ?? "not started"}
+          />
+          <DetailRow
+            label="Current step"
+            value={workflowRun?.currentStep ?? "queued"}
+          />
           <DetailRow
             label="Repair attempts"
             value={String(workflowRun?.repairCount ?? 0)}
@@ -187,7 +274,11 @@ export function WorkflowStatusPanel({
             </summary>
             <PreformattedList
               empty="No modified files captured yet."
-              items={modifiedFiles.length ? modifiedFiles : workflowRun?.modifiedFilesSummary}
+              items={
+                modifiedFiles.length
+                  ? modifiedFiles
+                  : workflowRun?.modifiedFilesSummary
+              }
             />
           </details>
 
@@ -233,8 +324,22 @@ export function WorkflowStatusPanel({
   );
 }
 
+function Metric({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md border p-3">
+      <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">
+        {label}
+      </p>
+      <p className="mt-1 break-words font-mono text-sm">{value}</p>
+    </div>
+  );
+}
+
 function getStepStates(workflowRun: WorkflowRun | null) {
-  const states: Record<string, "pending" | "running" | "complete" | "failed" | "skipped"> = {};
+  const states: Record<
+    string,
+    "pending" | "running" | "complete" | "failed" | "skipped"
+  > = {};
 
   if (!workflowRun) {
     for (const step of generationSteps) states[step.id] = "pending";
@@ -273,7 +378,11 @@ function getStepStates(workflowRun: WorkflowRun | null) {
 
   for (let index = 0; index < generationSteps.length; index += 1) {
     const step = generationSteps[index];
-    if (step.id === "repair" && workflowRun.repairCount === 0 && currentIndex > index) {
+    if (
+      step.id === "repair" &&
+      workflowRun.repairCount === 0 &&
+      currentIndex > index
+    ) {
       states[step.id] = "skipped";
     } else if (index < currentIndex) {
       states[step.id] = "complete";
@@ -348,4 +457,44 @@ function getFailedCommandOutput(workflowRun: WorkflowRun | null) {
   const output = "output" in value ? value.output : null;
 
   return typeof output === "string" && output.trim() ? output : null;
+}
+
+function getWorkflowTiming(events: WorkflowEvent[]) {
+  if (!events.length) {
+    return { elapsedLabel: "pending" };
+  }
+
+  const startedAt = new Date(events[0].createdAt).getTime();
+  const endedAt = new Date(events[events.length - 1].createdAt).getTime();
+
+  return {
+    elapsedLabel: formatDuration(endedAt - startedAt),
+  };
+}
+
+function formatTime(value: string) {
+  return new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  }).format(new Date(value));
+}
+
+function formatDuration(durationMs: number) {
+  const safeDuration = Math.max(durationMs, 0);
+
+  if (safeDuration < 1000) {
+    return `+${safeDuration}ms`;
+  }
+
+  const seconds = Math.round(safeDuration / 1000);
+
+  if (seconds < 60) {
+    return `+${seconds}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+
+  return `+${minutes}m ${remainder}s`;
 }

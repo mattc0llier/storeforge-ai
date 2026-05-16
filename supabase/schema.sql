@@ -38,6 +38,23 @@ create table if not exists public.workflow_runs (
   error_message text
 );
 
+create table if not exists public.workflow_events (
+  id uuid primary key default gen_random_uuid(),
+  workflow_run_id uuid not null references public.workflow_runs(id) on delete cascade,
+  store_id uuid not null references public.stores(id) on delete cascade,
+  trace_id text not null,
+  span_id text not null default replace(gen_random_uuid()::text, '-', ''),
+  parent_span_id text,
+  event_name text not null,
+  step text not null,
+  status text not null
+    check (status in ('queued', 'running', 'succeeded', 'failed', 'info')),
+  message text not null,
+  duration_ms integer,
+  attributes jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.deployment_metadata (
   id uuid primary key default gen_random_uuid(),
   store_id uuid not null references public.stores(id) on delete cascade,
@@ -59,6 +76,12 @@ create index if not exists stores_clerk_user_id_idx
 
 create index if not exists workflow_runs_store_id_idx
   on public.workflow_runs(store_id);
+
+create index if not exists workflow_events_workflow_run_id_created_at_idx
+  on public.workflow_events(workflow_run_id, created_at);
+
+create index if not exists workflow_events_store_id_created_at_idx
+  on public.workflow_events(store_id, created_at);
 
 create index if not exists deployment_metadata_store_id_idx
   on public.deployment_metadata(store_id);
