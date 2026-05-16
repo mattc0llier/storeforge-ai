@@ -21,7 +21,11 @@ import { Separator } from "@/components/ui/separator";
 import { getLatestWorkflowRunForStore } from "@/lib/stores/workflow-runs";
 import { getStoreJob } from "@/lib/stores/repository";
 
-import { launchStoreAction } from "./actions";
+import {
+  generateProductImagesAction,
+  launchStoreAction,
+  regenerateProductConceptAction,
+} from "./actions";
 
 const preparationStatuses = [
   "Commerce template preparing",
@@ -93,14 +97,36 @@ export default async function StoreBlueprintPage({
                 </Button>
               </form>
             )}
+            {latestRun?.status === "running" || latestRun?.status === "queued" ? (
+              <Button disabled size="lg" variant="outline">
+                <RefreshCw />
+                Regenerate product concept
+              </Button>
+            ) : (
+              <form action={regenerateProductConceptAction.bind(null, store.id)}>
+                <Button size="lg" type="submit" variant="outline">
+                  <RefreshCw />
+                  Regenerate product concept
+                </Button>
+              </form>
+            )}
             <Button disabled size="lg" variant="outline">
-              <RefreshCw />
+              <Sparkles />
               Regenerate brand
             </Button>
-            <Button disabled size="lg" variant="outline">
-              <ImagePlus />
-              Regenerate image
-            </Button>
+            {latestRun?.status === "running" || latestRun?.status === "queued" ? (
+              <Button disabled size="lg" variant="outline">
+                <ImagePlus />
+                Generate images
+              </Button>
+            ) : (
+              <form action={generateProductImagesAction.bind(null, store.id)}>
+                <Button size="lg" type="submit" variant="outline">
+                  <ImagePlus />
+                  Generate images
+                </Button>
+              </form>
+            )}
           </div>
           <p className="text-xs text-muted-foreground">
             Launch approval will connect to the repository transformation flow
@@ -194,9 +220,12 @@ export default async function StoreBlueprintPage({
                 className="flex flex-col gap-3 rounded-md border p-4 sm:flex-row sm:items-start"
                 key={product.id}
               >
-                <div className="flex size-12 shrink-0 items-center justify-center rounded-md bg-muted text-sm font-semibold">
-                  {product.title.slice(0, 2).toUpperCase()}
-                </div>
+                <div
+                  aria-label={product.imageAlt}
+                  className="aspect-square size-16 shrink-0 rounded-md border bg-cover bg-center"
+                  role="img"
+                  style={{ backgroundImage: `url(${product.imageUrl})` }}
+                />
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="font-medium">{product.title}</p>
@@ -206,6 +235,9 @@ export default async function StoreBlueprintPage({
                   </div>
                   <p className="text-sm text-muted-foreground">
                     {product.description}
+                  </p>
+                  <p className="line-clamp-2 text-xs text-muted-foreground">
+                    Image prompt: {product.imagePrompt}
                   </p>
                 </div>
                 <p className="text-sm font-semibold">
