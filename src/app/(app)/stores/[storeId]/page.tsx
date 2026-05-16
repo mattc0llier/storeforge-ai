@@ -1,5 +1,4 @@
 import {
-  CircleDashed,
   ImagePlus,
   Palette,
   RefreshCw,
@@ -27,12 +26,6 @@ import {
   regenerateProductConceptAction,
 } from "./actions";
 
-const preparationStatuses = [
-  "Commerce template preparing",
-  "Workspace preparing",
-  "Codex waiting for launch approval",
-];
-
 export default async function StoreBlueprintPage({
   params,
 }: {
@@ -52,10 +45,9 @@ export default async function StoreBlueprintPage({
 
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6">
-      <section className="grid gap-6 lg:grid-cols-[1.35fr_0.65fr]">
+      <section>
         <div className="space-y-5 rounded-lg border bg-card p-6 shadow-sm sm:p-8">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge>Blueprint ready</Badge>
             <Badge variant="outline">Store ID: {store.id.slice(0, 8)}</Badge>
           </div>
 
@@ -133,30 +125,6 @@ export default async function StoreBlueprintPage({
             in the next implementation step.
           </p>
         </div>
-
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Sparkles className="size-5" />
-              Preparation
-            </CardTitle>
-            <CardDescription>
-              The launch spine is staged, but paused before Codex transforms a
-              repository.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {preparationStatuses.map((status) => (
-              <div className="flex items-center gap-3" key={status}>
-                <CircleDashed className="size-5 text-muted-foreground" />
-                <div>
-                  <p className="text-sm font-medium">{status}</p>
-                  <p className="text-xs text-muted-foreground">pending</p>
-                </div>
-              </div>
-            ))}
-          </CardContent>
-        </Card>
       </section>
 
       <section className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">

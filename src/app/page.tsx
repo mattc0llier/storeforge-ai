@@ -1,5 +1,10 @@
-import { redirect } from "next/navigation";
+import { AppShell } from "@/components/app-shell";
+import { CreateStoreHero } from "@/app/(app)/create-store/create-store-hero";
 
 export default function HomePage() {
-  redirect("/dashboard");
+  return (
+    <AppShell>
+      <CreateStoreHero />
+    </AppShell>
+  );
 }
