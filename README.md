@@ -31,9 +31,9 @@ This repository contains the StoreForge demo spine: blueprint approval, Supabase
 ## Setup
 
 ```bash
-npm install
+pnpm install
 cp .env.example .env.local
-npm run dev
+pnpm dev
 ```
 
 The scaffold uses Clerk, Supabase, Tailwind, shadcn/ui, Zod, and the Codex TypeScript SDK. Final GitHub repository creation, durable cloud orchestration, and Vercel deployment automation are still TODOs.
@@ -87,3 +87,29 @@ Expected output:
 - build/test result
 - repair attempts used
 - temporary workspace path
+
+## Vercel Project Runbook
+
+Link this checkout to the existing Vercel project:
+
+```bash
+vercel link
+```
+
+Pull project environment variables into local development:
+
+```bash
+vercel env pull .env.local
+```
+
+Start the local app:
+
+```bash
+pnpm dev
+```
+
+The production app should expose a lightweight health route at:
+
+```text
+/api/health/check
+```

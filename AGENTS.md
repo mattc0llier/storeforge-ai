@@ -106,6 +106,28 @@ Do not sacrifice reliability for novelty.
 
 ---
 
+## Performance Priorities
+
+The Vercel Commerce template is a known, repeated input. Do not make Codex
+rediscover the entire repository on every generation.
+
+Prefer:
+
+- cached prepared Commerce templates over fresh network clone/install work
+- compact template maps in prompts
+- deterministic StoreForge code for known fallback catalog/theme scaffolding
+- narrow Codex edits against known files
+- targeted repair prompts with exact failure context
+
+Avoid:
+
+- broad repo scans before every transformation
+- reading `node_modules`, generated output, or unrelated template internals
+- asking Codex to perform deterministic formatting or boilerplate work
+- large creative rewrites when a known patch point exists
+
+---
+
 ## Commerce Transformation Rules
 
 StoreForge transforms a real Vercel Commerce repository, so reliability matters
@@ -123,8 +145,14 @@ When validating a generated Commerce workspace:
 - Always run formatting before every validation pass:
   `pnpm prettier --write --ignore-unknown .`
 - Then run `pnpm build` and `pnpm test`.
+- Run Commerce install/build/test commands with a clean child process
+  environment. Do not inherit StoreForge's Next dev server variables such as
+  `NODE_ENV`, `NODE_OPTIONS`, `NEXT_*`, or Turbopack internals into the Commerce
+  build.
 - Capture and persist enough stdout/stderr to reveal the real failing file or
   exception. Do not reduce failures to `ELIFECYCLE` or a wrapper error.
+- Persist the exact failed command output separately when validation ultimately
+  fails, so the UI can show the true stdout/stderr instead of only a summary.
 - Treat fallback menu/product/page log lines as diagnostic context, not a
   failure by themselves. The command exit code and nearby error output are the
   source of truth.
@@ -134,3 +162,10 @@ recent stdout/stderr tail, and modified file list. Prefer small, targeted
 repairs over broad re-transformation. After each repair, format before
 re-running build/test. Do not spend a repair attempt on formatting-only drift;
 make formatting a deterministic pipeline step.
+
+If `pnpm build` exits non-zero but only reports wrapper output such as
+`ELIFECYCLE` without an actionable compiler/runtime error, retry the same build
+once before spending a repair attempt. After the maximum repair attempts are
+used, run one final clean validation pass (`rm -rf .next`, then format, build,
+and test) before marking the workflow failed. This protects against stale build
+state and transient false negatives.

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { mkdtemp } from "node:fs/promises";
+import type { SpawnOptions } from "node:child_process";
+import { access, mkdir, mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -22,6 +23,15 @@ import {
 
 const MAX_REPAIR_ATTEMPTS = 2;
 const PNPM = "npx --yes pnpm@10.33.0";
+const COMMERCE_TEMPLATE_CACHE_PATH = path.join(
+  os.tmpdir(),
+  "storeforge-cache",
+  "commerce-template",
+);
+const COMMERCE_TEMPLATE_REPO_PATH = path.join(
+  COMMERCE_TEMPLATE_CACHE_PATH,
+  "commerce",
+);
 
 export type StoreGenerationRunInput = {
   storeId: string;
@@ -41,6 +51,7 @@ type PreparedWorkspace = {
   root: string;
   workspacePath: string;
   installLogSummary: string;
+  templateLogSummary: string;
 };
 
 type ProductAssetMetadata = {
@@ -62,6 +73,11 @@ type VerificationResult = {
   ok: boolean;
   failedCommand: CommandResult | null;
   commands: CommandResult[];
+};
+
+type VerificationOptions = {
+  cleanBeforeBuild?: boolean;
+  retryOpaqueBuildFailure?: boolean;
 };
 
 export async function runStoreGeneration(
@@ -102,23 +118,41 @@ async function prepareWorkspace(
   const root = await mkdtemp(path.join(os.tmpdir(), "storeforge-commerce-"));
   const workspacePath = path.join(root, "commerce");
 
+  const templateLogSummary = await ensureCommerceTemplateCache();
+
   await runRequiredCommand(
-    "git clone --depth 1 https://github.com/vercel/commerce commerce",
+    `git -C ${shellQuote(COMMERCE_TEMPLATE_REPO_PATH)} worktree prune`,
+    {
+      cwd: COMMERCE_TEMPLATE_CACHE_PATH,
+      timeoutMs: 30000,
+    },
+  );
+  await runRequiredCommand(
+    `git -C ${shellQuote(COMMERCE_TEMPLATE_REPO_PATH)} worktree add --detach ${shellQuote(workspacePath)} HEAD`,
     {
       cwd: root,
       timeoutMs: 120000,
     },
   );
 
-  const install = await runRequiredCommand(`${PNPM} install --frozen-lockfile`, {
+  let install = await runCommand(`${PNPM} install --offline --frozen-lockfile`, {
     cwd: workspacePath,
+    cleanEnv: true,
     timeoutMs: 600000,
   });
+
+  if (install.exitCode !== 0) {
+    install = await runRequiredCommand(`${PNPM} install --frozen-lockfile`, {
+      cwd: workspacePath,
+      cleanEnv: true,
+      timeoutMs: 600000,
+    });
+  }
 
   const installLogSummary = summarizeCommand(install);
   await updateWorkflowRun(input.workflowRunId, {
     workspacePath,
-    logsSummary: [installLogSummary],
+    logsSummary: [templateLogSummary, installLogSummary],
   });
   await emitProgress("workspace", "succeeded", "Workspace prepared");
   console.log(`[generate-store] prepareWorkspace DONE workspace=${workspacePath}`);
@@ -127,7 +161,58 @@ async function prepareWorkspace(
     root,
     workspacePath,
     installLogSummary,
+    templateLogSummary,
   };
+}
+
+async function ensureCommerceTemplateCache() {
+  await mkdir(COMMERCE_TEMPLATE_CACHE_PATH, { recursive: true });
+
+  const hasCachedRepo = await pathExists(
+    path.join(COMMERCE_TEMPLATE_REPO_PATH, ".git"),
+  );
+  const status = hasCachedRepo
+    ? await runCommand("git rev-parse --is-inside-work-tree", {
+        cwd: COMMERCE_TEMPLATE_REPO_PATH,
+        timeoutMs: 30000,
+      })
+    : null;
+
+  if (status?.exitCode !== 0) {
+    await rm(COMMERCE_TEMPLATE_REPO_PATH, { force: true, recursive: true });
+    await runRequiredCommand(
+      "git clone --depth 1 https://github.com/vercel/commerce commerce",
+      {
+        cwd: COMMERCE_TEMPLATE_CACHE_PATH,
+        timeoutMs: 120000,
+      },
+    );
+
+    const install = await runRequiredCommand(`${PNPM} install --frozen-lockfile`, {
+      cwd: COMMERCE_TEMPLATE_REPO_PATH,
+      cleanEnv: true,
+      timeoutMs: 600000,
+    });
+
+    return [
+      `Prepared Commerce template cache at ${COMMERCE_TEMPLATE_REPO_PATH}`,
+      summarizeCommand(install),
+    ].join("\n");
+  }
+
+  const reset = await runRequiredCommand("git reset --hard HEAD", {
+    cwd: COMMERCE_TEMPLATE_REPO_PATH,
+    timeoutMs: 30000,
+  });
+  await runRequiredCommand("git clean -fd", {
+    cwd: COMMERCE_TEMPLATE_REPO_PATH,
+    timeoutMs: 30000,
+  });
+
+  return [
+    `Reused Commerce template cache at ${COMMERCE_TEMPLATE_REPO_PATH}`,
+    summarizeCommand(reset),
+  ].join("\n");
 }
 
 async function generateProductAssets(
@@ -211,10 +296,9 @@ async function validateAndRepairWorkspace(
   }
 
   let repairAttemptsUsed = 0;
-  let verification = await verifyCommerceWorkspace(
-    workspacePath,
-    store.blueprint.storeName,
-  );
+  let verification = await verifyCommerceWorkspace(workspacePath, store.blueprint.storeName, {
+    retryOpaqueBuildFailure: true,
+  });
   const logsSummary = verification.commands.map(summarizeCommand);
   const codexActivity: string[] = [];
 
@@ -257,8 +341,29 @@ async function validateAndRepairWorkspace(
     verification = await verifyCommerceWorkspace(
       workspacePath,
       store.blueprint.storeName,
+      {
+        retryOpaqueBuildFailure: true,
+      },
     );
     logsSummary.push(...verification.commands.map(summarizeCommand));
+  }
+
+  if (!verification.ok) {
+    await emitProgress(
+      "build",
+      "running",
+      "Running final clean validation before failing",
+    );
+    const finalVerification = await verifyCommerceWorkspace(
+      workspacePath,
+      store.blueprint.storeName,
+      {
+        cleanBeforeBuild: true,
+        retryOpaqueBuildFailure: true,
+      },
+    );
+    logsSummary.push(...finalVerification.commands.map(summarizeCommand));
+    verification = finalVerification;
   }
 
   const modifiedFiles = await getModifiedFiles(workspacePath);
@@ -277,6 +382,9 @@ async function validateAndRepairWorkspace(
         exitCode: command.exitCode,
         durationMs: command.durationMs,
       })),
+      failedCommandOutput: verification.failedCommand
+        ? serializeCommandResult(verification.failedCommand)
+        : null,
       modifiedFiles,
     },
   });
@@ -432,6 +540,7 @@ async function runCodexTurnWithStreaming({
 async function verifyCommerceWorkspace(
   workspacePath: string,
   siteName: string,
+  options: VerificationOptions = {},
 ): Promise<VerificationResult> {
   const env = {
     SITE_NAME: siteName,
@@ -442,6 +551,7 @@ async function verifyCommerceWorkspace(
   };
   const commands = [
     `${PNPM} prettier --write --ignore-unknown .`,
+    ...(options.cleanBeforeBuild ? ["rm -rf .next"] : []),
     `${PNPM} build`,
     `${PNPM} test`,
   ];
@@ -450,12 +560,36 @@ async function verifyCommerceWorkspace(
   for (const command of commands) {
     const result = await runCommand(command, {
       cwd: workspacePath,
+      cleanEnv: true,
       env,
       timeoutMs: 600000,
     });
     results.push(result);
 
     if (result.exitCode !== 0) {
+      if (
+        options.retryOpaqueBuildFailure &&
+        isOpaqueBuildFailure(result)
+      ) {
+        const retry = await runCommand(command, {
+          cwd: workspacePath,
+          cleanEnv: true,
+          env,
+          timeoutMs: 600000,
+        });
+        results.push(retry);
+
+        if (retry.exitCode === 0) {
+          continue;
+        }
+
+        return {
+          ok: false,
+          failedCommand: retry,
+          commands: results,
+        };
+      }
+
       return {
         ok: false,
         failedCommand: result,
@@ -500,6 +634,7 @@ function runCommand(
   command: string,
   options: {
     cwd: string;
+    cleanEnv?: boolean;
     env?: Record<string, string>;
     timeoutMs: number;
   },
@@ -507,15 +642,17 @@ function runCommand(
   const startedAt = Date.now();
 
   return new Promise((resolve, reject) => {
-    const child = spawn(command, {
+    const childEnv = {
+      ...(options.cleanEnv ? buildCleanCommandEnv() : process.env),
+      ...options.env,
+    } as NodeJS.ProcessEnv;
+    const spawnOptions: SpawnOptions = {
       cwd: options.cwd,
-      env: {
-        ...process.env,
-        ...options.env,
-      },
+      env: childEnv,
       shell: true,
       stdio: ["ignore", "pipe", "pipe"],
-    });
+    };
+    const child = spawn(command, spawnOptions);
     const stdoutChunks: Buffer[] = [];
     const stderrChunks: Buffer[] = [];
     let settled = false;
@@ -567,6 +704,7 @@ async function runRequiredCommand(
   command: string,
   options: {
     cwd: string;
+    cleanEnv?: boolean;
     env?: Record<string, string>;
     timeoutMs: number;
   },
@@ -592,10 +730,30 @@ async function runRequiredCommand(
 function summarizeCommand(command: CommandResult) {
   return [
     `${command.command} exited ${command.exitCode ?? "unknown"} in ${Math.round(command.durationMs / 1000)}s`,
-    tail(command.stdout || command.stderr, 1200),
+    tail(formatCommandOutput(command), 12000),
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+function serializeCommandResult(command: CommandResult) {
+  return {
+    command: command.command,
+    exitCode: command.exitCode,
+    durationMs: command.durationMs,
+    stdout: command.stdout,
+    stderr: command.stderr,
+    output: formatCommandOutput(command),
+  };
+}
+
+function formatCommandOutput(command: CommandResult) {
+  return [
+    command.stdout ? ["stdout:", command.stdout].join("\n") : "",
+    command.stderr ? ["stderr:", command.stderr].join("\n") : "",
+  ]
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 function formatCodexEventLine(event: ThreadEvent) {
@@ -619,12 +777,27 @@ function shouldStreamCodexLine(line: string) {
   );
 }
 
-function summarizeLines(lines: string[], maxLines = 24) {
+function summarizeLines(lines: string[], maxLines = 80) {
   return lines
     .flatMap((line) => line.split("\n"))
     .map((line) => line.trim())
     .filter(Boolean)
     .slice(-maxLines);
+}
+
+function isOpaqueBuildFailure(command: CommandResult) {
+  if (!command.command.includes(" build") || command.exitCode === 0) {
+    return false;
+  }
+
+  const output = formatCommandOutput(command);
+
+  return (
+    output.includes("ELIFECYCLE") &&
+    !/error[:\s]|failed to compile|type error|syntaxerror|referenceerror|module not found/i.test(
+      output,
+    )
+  );
 }
 
 function tail(value: string, maxLength = 2000) {
@@ -633,6 +806,45 @@ function tail(value: string, maxLength = 2000) {
   }
 
   return value.slice(value.length - maxLength);
+}
+
+function shellQuote(value: string) {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function buildCleanCommandEnv() {
+  const allowedKeys = [
+    "PATH",
+    "HOME",
+    "SHELL",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "USER",
+    "LOGNAME",
+    "LANG",
+    "LC_ALL",
+  ];
+  const env: Record<string, string> = {};
+
+  for (const key of allowedKeys) {
+    const value = process.env[key];
+
+    if (value) {
+      env[key] = value;
+    }
+  }
+
+  return env;
+}
+
+async function pathExists(value: string) {
+  try {
+    await access(value);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function formatUnknownError(error: unknown) {
