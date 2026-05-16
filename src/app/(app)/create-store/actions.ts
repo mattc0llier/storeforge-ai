@@ -5,7 +5,7 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 
 import { createStoreJob } from "@/lib/stores/repository";
-import { generateStoreBlueprintFromPrompt } from "@/lib/store-generation/store-blueprint";
+import { generateStoreBlueprint } from "@/lib/store-generation/blueprint-generator";
 
 const CreateStoreFormSchema = z.object({
   prompt: z
@@ -42,7 +42,9 @@ export async function createStoreAction(
   }
 
   try {
-    const blueprint = generateStoreBlueprintFromPrompt(parsed.data.prompt);
+    const blueprint = await generateStoreBlueprint({
+      prompt: parsed.data.prompt,
+    });
     const store = await createStoreJob({
       userId,
       originalPrompt: parsed.data.prompt,

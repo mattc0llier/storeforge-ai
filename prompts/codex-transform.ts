@@ -46,6 +46,8 @@ export function buildCommerceTransformPrompt({
     "Performance constraints:",
     "- Treat the Commerce template structure above as known; do not do a broad repository survey.",
     "- Inspect only the listed files unless a direct import/type error requires another file.",
+    "- Use the local repository files in the current workspace; do not use web search or GitHub raw URLs to inspect Commerce source.",
+    "- If local file reads fail, stop and report the filesystem access problem instead of searching the web.",
     "- Prefer editing 5-10 focused files over touching many components.",
     "- Avoid reading large unrelated files, package internals, generated output, or node_modules.",
     "",

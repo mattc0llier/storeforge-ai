@@ -289,6 +289,7 @@ function getSandboxJobEnvironment(input: StoreGenerationRunInput) {
     CODEX_BASE_URL: process.env.CODEX_BASE_URL,
     CODEX_MODEL: process.env.CODEX_MODEL,
     CODEX_CLI_PACKAGE: process.env.CODEX_CLI_PACKAGE ?? "@openai/codex@0.130.0",
+    CODEX_SANDBOX_MODE: process.env.CODEX_SANDBOX_MODE ?? "danger-full-access",
     PNPM_VERSION: "10.33.0",
   });
 }
@@ -368,9 +369,24 @@ async function main() {
   );
   await emitEvent('products', 'running', 'Sandbox generation job started');
 
+  const preflight = await runCommand('pwd && test -f app/page.tsx && test -f app/layout.tsx', {
+    timeoutMs: 30_000,
+  });
+
+  if (preflight.exitCode !== 0) {
+    throw new Error(
+      'Commerce workspace preflight failed before Codex transformation: ' +
+        summarizeCommand(preflight),
+    );
+  }
+
   await patchWorkflowRun({
     currentStep: 'codex',
-    logsSummary: ['Product metadata prepared', 'Starting Codex transformation'],
+    logsSummary: [
+      'Product metadata prepared',
+      'Commerce workspace preflight passed',
+      'Starting Codex transformation',
+    ],
   });
   await emitEvent('codex', 'running', 'Starting Codex transformation');
 
@@ -509,11 +525,16 @@ async function runCodex({ label, promptPath }) {
     ? ' --model ' + shellQuote(process.env.CODEX_MODEL)
     : '';
   const codexPackage = process.env.CODEX_CLI_PACKAGE || '@openai/codex@0.130.0';
+  const sandboxMode = process.env.CODEX_SANDBOX_MODE || 'danger-full-access';
   const command =
     'npx --yes ' +
     shellQuote(codexPackage) +
-    ' exec --json --sandbox workspace-write --skip-git-repo-check --config ' +
+    ' exec --json --sandbox ' +
+    shellQuote(sandboxMode) +
+    ' --skip-git-repo-check --config ' +
     shellQuote('approval_policy="never"') +
+    ' --config ' +
+    shellQuote('web_search="disabled"') +
     ' --cd ' +
     shellQuote(WORKSPACE) +
     model +

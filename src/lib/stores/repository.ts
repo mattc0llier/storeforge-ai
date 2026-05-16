@@ -12,6 +12,11 @@ type CreateStoreJobInput = {
   blueprint: StoreBlueprint;
 };
 
+type UpdateStoreBlueprintInput = {
+  storeId: string;
+  blueprint: StoreBlueprint;
+};
+
 export async function createStoreJob({
   userId,
   originalPrompt,
@@ -62,6 +67,32 @@ export async function getStoreJob(storeId: string) {
   }
 
   return data ? mapStoreRow(data) : null;
+}
+
+export async function updateStoreBlueprint({
+  storeId,
+  blueprint,
+}: UpdateStoreBlueprintInput) {
+  const supabase = getSupabaseAdminClient();
+  const parsedBlueprint = StoreBlueprintSchema.parse(blueprint);
+
+  const { data, error } = await supabase
+    .from("stores")
+    .update({
+      name: parsedBlueprint.storeName,
+      blueprint_json: parsedBlueprint as unknown as Json,
+      product_count: parsedBlueprint.products.length,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("id", storeId)
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to update store blueprint: ${error.message}`);
+  }
+
+  return mapStoreRow(data);
 }
 
 function mapStoreRow(row: Database["public"]["Tables"]["stores"]["Row"]) {
