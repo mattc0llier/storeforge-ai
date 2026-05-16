@@ -4,8 +4,7 @@ import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
-import { createStoreJob } from "@/lib/stores/repository";
-import { generateStoreBlueprint } from "@/lib/store-generation/blueprint-generator";
+import { createPendingStoreJob } from "@/lib/stores/repository";
 
 const CreateStoreFormSchema = z.object({
   prompt: z
@@ -42,13 +41,9 @@ export async function createStoreAction(
   }
 
   try {
-    const blueprint = await generateStoreBlueprint({
-      prompt: parsed.data.prompt,
-    });
-    const store = await createStoreJob({
+    const store = await createPendingStoreJob({
       userId,
       originalPrompt: parsed.data.prompt,
-      blueprint,
     });
 
     redirect(`/stores/${store.id}`);

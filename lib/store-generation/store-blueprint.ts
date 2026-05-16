@@ -50,6 +50,63 @@ export type ColorPalette = z.infer<typeof ColorPaletteSchema>;
 export type Product = z.infer<typeof ProductSchema>;
 export type StoreBlueprint = z.infer<typeof StoreBlueprintSchema>;
 
+export function createPendingStoreBlueprint(prompt: string): StoreBlueprint {
+  const cleanedPrompt = prompt.trim();
+
+  return StoreBlueprintSchema.parse({
+    storeName: "Generating Store",
+    businessIdea: cleanedPrompt,
+    tagline: "Preparing your StoreForge blueprint.",
+    targetAudience: "Generating target audience.",
+    visualDirection: "Generating visual direction.",
+    colorPalette: [
+      {
+        name: "Primary",
+        hex: "#000000",
+        usage: "Generating primary brand usage.",
+      },
+      {
+        name: "Surface",
+        hex: "#FFFFFF",
+        usage: "Generating surface usage.",
+      },
+      {
+        name: "Neutral",
+        hex: "#E9ECEF",
+        usage: "Generating neutral usage.",
+      },
+    ],
+    catalogStrategy: "Generating catalog strategy.",
+    homepageHeadline: "Generating storefront concept.",
+    homepageSubheading: "Generating storefront positioning.",
+    brandVoice: "Generating brand voice.",
+    theme: {
+      name: "Generating theme",
+      primaryColor: "#000000",
+      accentColor: "#505050",
+      backgroundColor: "#FFFFFF",
+      textColor: "#0D0D0D",
+      mood: "Generating mood.",
+    },
+    products: [
+      {
+        id: "generating-product",
+        handle: "generating-product",
+        title: "Generating Product",
+        description: "Generating product details.",
+        price: "0.00",
+        currencyCode: "USD",
+        imageUrl: "https://placehold.co/1200x1200/png",
+        imageAlt: "Generating product image.",
+        imagePrompt: "Generating product image prompt.",
+      },
+    ],
+    heroProductId: "generating-product",
+    heroProduct: "Generating Product",
+    heroImagePrompt: "Generating hero image prompt.",
+  });
+}
+
 export function generateStoreBlueprintFromPrompt(prompt: string): StoreBlueprint {
   const cleanedPrompt = prompt.trim();
   const productCount = inferProductCount(cleanedPrompt);

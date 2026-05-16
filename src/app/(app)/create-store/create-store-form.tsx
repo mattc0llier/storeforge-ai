@@ -80,7 +80,6 @@ export function CreateStoreForm() {
       </form>
 
       <div className="mx-auto flex max-w-4xl flex-wrap items-center justify-center gap-2.5">
-        <span className="text-sm text-muted-foreground">Try</span>
         {examplePrompts.map((example) => (
           <button
             className="h-10 rounded-full border border-border bg-background px-4 text-sm font-medium text-muted-foreground shadow-sm transition-colors hover:border-foreground/25 hover:bg-muted hover:text-foreground disabled:cursor-not-allowed disabled:opacity-60"

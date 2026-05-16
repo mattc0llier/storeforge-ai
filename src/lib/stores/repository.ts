@@ -2,6 +2,7 @@ import { StoreSchema } from "@/lib/db/schema";
 import type { Database, Json } from "@/lib/db/types";
 import { getSupabaseAdminClient } from "@/lib/supabase";
 import {
+  createPendingStoreBlueprint,
   StoreBlueprintSchema,
   type StoreBlueprint,
 } from "@/lib/store-generation/store-blueprint";
@@ -12,9 +13,15 @@ type CreateStoreJobInput = {
   blueprint: StoreBlueprint;
 };
 
+type CreatePendingStoreJobInput = {
+  userId: string;
+  originalPrompt: string;
+};
+
 type UpdateStoreBlueprintInput = {
   storeId: string;
   blueprint: StoreBlueprint;
+  status?: Database["public"]["Tables"]["stores"]["Row"]["status"];
 };
 
 type StoreDashboardInput = {
@@ -65,6 +72,42 @@ export async function createStoreJob({
   return mapStoreRow(data);
 }
 
+export async function createPendingStoreJob({
+  userId,
+  originalPrompt,
+}: CreatePendingStoreJobInput) {
+  const supabase = getSupabaseAdminClient();
+  const storeId = crypto.randomUUID();
+  const now = new Date().toISOString();
+  const blueprint = createPendingStoreBlueprint(originalPrompt);
+  const slug = createStoreSlug("generating-store", storeId);
+
+  const { data, error } = await supabase
+    .from("stores")
+    .insert({
+      id: storeId,
+      clerk_user_id: userId,
+      name: blueprint.storeName,
+      slug,
+      business_idea: originalPrompt,
+      original_prompt: originalPrompt,
+      blueprint_json: blueprint as unknown as Json,
+      status: "generating",
+      product_count: blueprint.products.length,
+      source_template_repo: "vercel/commerce",
+      created_at: now,
+      updated_at: now,
+    })
+    .select("*")
+    .single();
+
+  if (error) {
+    throw new Error(`Failed to create store job: ${error.message}`);
+  }
+
+  return mapStoreRow(data);
+}
+
 export async function getStoreJob(storeId: string) {
   const supabase = getSupabaseAdminClient();
 
@@ -84,18 +127,25 @@ export async function getStoreJob(storeId: string) {
 export async function updateStoreBlueprint({
   storeId,
   blueprint,
+  status,
 }: UpdateStoreBlueprintInput) {
   const supabase = getSupabaseAdminClient();
   const parsedBlueprint = StoreBlueprintSchema.parse(blueprint);
+  const update: Database["public"]["Tables"]["stores"]["Update"] = {
+    name: parsedBlueprint.storeName,
+    slug: createStoreSlug(parsedBlueprint.storeName, storeId),
+    blueprint_json: parsedBlueprint as unknown as Json,
+    product_count: parsedBlueprint.products.length,
+    updated_at: new Date().toISOString(),
+  };
+
+  if (status) {
+    update.status = status;
+  }
 
   const { data, error } = await supabase
     .from("stores")
-    .update({
-      name: parsedBlueprint.storeName,
-      blueprint_json: parsedBlueprint as unknown as Json,
-      product_count: parsedBlueprint.products.length,
-      updated_at: new Date().toISOString(),
-    })
+    .update(update)
     .eq("id", storeId)
     .select("*")
     .single();
