@@ -517,15 +517,32 @@ async function runCodex({ label, promptPath }) {
     model +
     ' - < ' +
     shellQuote(promptPath);
+  const activity = [];
 
   const result = await runCommand(command, {
     env: buildCodexEnv(),
     timeoutMs: 1_200_000,
+    onStdoutLine: async (line) => {
+      const activityLine = await handleCodexJsonLine(label, line);
+
+      if (!activityLine) {
+        return;
+      }
+
+      activity.push(activityLine);
+
+      if (activity.length % 5 === 0) {
+        await patchWorkflowRun({
+          codexActivitySummary: summarizeLines(activity),
+        });
+      }
+    },
   });
-  const outputLines = summarizeLines([
-    result.stdout,
-    result.stderr,
-  ]).map((line) => '[' + label + '] ' + line);
+  const outputLines = activity.length
+    ? summarizeLines(activity)
+    : summarizeLines([result.stdout, result.stderr]).map(
+        (line) => '[' + label + '] ' + line,
+      );
 
   await patchWorkflowRun({
     codexActivitySummary: outputLines,
@@ -536,6 +553,287 @@ async function runCodex({ label, promptPath }) {
   }
 
   return outputLines;
+}
+
+async function handleCodexJsonLine(label, line) {
+  if (!line.trim()) {
+    return null;
+  }
+
+  let event;
+
+  try {
+    event = JSON.parse(line);
+  } catch {
+    return '[' + label + '] ' + line;
+  }
+
+  const summary = summarizeCodexEvent(event);
+  await emitCodexEvent(label, event, summary);
+
+  return '[' + label + '] ' + summary.message;
+}
+
+async function emitCodexEvent(label, event, summary) {
+  await supabaseInsert('/rest/v1/workflow_events', {
+    workflow_run_id: workflowRunId,
+    store_id: storeId,
+    trace_id: workflowRunId,
+    event_name: summary.eventName,
+    step: label.startsWith('repair') ? 'repair' : 'codex',
+    status: summary.status,
+    message: summary.message,
+    attributes: {
+      label,
+      eventType: event.type,
+      ...summary.attributes,
+    },
+  }).catch((error) => {
+    console.warn('[workflow-events] failed to record Codex event', error);
+  });
+}
+
+function summarizeCodexEvent(event) {
+  if (event.type === 'thread.started') {
+    return {
+      eventName: 'codex.thread.started',
+      status: 'info',
+      message: 'Codex thread started',
+      attributes: { threadId: event.thread_id },
+    };
+  }
+
+  if (event.type === 'turn.started') {
+    return {
+      eventName: 'codex.turn.started',
+      status: 'running',
+      message: 'Codex turn started',
+      attributes: {},
+    };
+  }
+
+  if (event.type === 'turn.completed') {
+    return {
+      eventName: 'codex.turn.completed',
+      status: 'succeeded',
+      message: 'Codex turn completed',
+      attributes: { usage: event.usage },
+    };
+  }
+
+  if (event.type === 'turn.failed') {
+    return {
+      eventName: 'codex.turn.failed',
+      status: 'failed',
+      message: 'Codex turn failed: ' + (event.error?.message || 'Unknown error'),
+      attributes: { error: event.error },
+    };
+  }
+
+  if (event.type === 'error') {
+    return {
+      eventName: 'codex.error',
+      status: 'failed',
+      message: 'Codex stream error: ' + (event.message || 'Unknown error'),
+      attributes: { message: event.message },
+    };
+  }
+
+  if (
+    event.type === 'item.started' ||
+    event.type === 'item.updated' ||
+    event.type === 'item.completed'
+  ) {
+    return summarizeCodexItemEvent(event);
+  }
+
+  return {
+    eventName: 'codex.unknown',
+    status: 'info',
+    message: 'Codex event: ' + String(event.type || 'unknown'),
+    attributes: {},
+  };
+}
+
+function summarizeCodexItemEvent(event) {
+  const item = event.item || {};
+  const itemType = item.type || 'unknown';
+  const status = mapCodexItemStatus(item.status, event.type);
+  const eventName = 'codex.' + event.type + '.' + itemType;
+
+  if (itemType === 'command_execution') {
+    return {
+      eventName,
+      status,
+      message: 'Command ' + readableStatus(status) + ': ' + tail(item.command, 140),
+      attributes: {
+        itemId: item.id,
+        itemType,
+        command: item.command,
+        itemStatus: item.status,
+        exitCode: item.exit_code ?? null,
+        outputTail: tail(item.aggregated_output || '', 2000),
+      },
+    };
+  }
+
+  if (itemType === 'file_change') {
+    const changes = Array.isArray(item.changes) ? item.changes : [];
+
+    return {
+      eventName,
+      status,
+      message:
+        'File changes ' +
+        readableStatus(status) +
+        ': ' +
+        summarizeFileChanges(changes),
+      attributes: {
+        itemId: item.id,
+        itemType,
+        itemStatus: item.status,
+        changes,
+      },
+    };
+  }
+
+  if (itemType === 'agent_message') {
+    return {
+      eventName,
+      status: 'info',
+      message: 'Agent message: ' + tail(item.text || '', 180),
+      attributes: {
+        itemId: item.id,
+        itemType,
+        textTail: tail(item.text || '', 1000),
+      },
+    };
+  }
+
+  if (itemType === 'reasoning') {
+    return {
+      eventName,
+      status: 'info',
+      message: 'Reasoning summary updated',
+      attributes: {
+        itemId: item.id,
+        itemType,
+        textTail: tail(item.text || '', 1000),
+      },
+    };
+  }
+
+  if (itemType === 'todo_list') {
+    const items = Array.isArray(item.items) ? item.items : [];
+    const completed = items.filter((todo) => Boolean(todo.completed)).length;
+
+    return {
+      eventName,
+      status: 'info',
+      message: 'Todo list updated: ' + completed + '/' + items.length + ' complete',
+      attributes: {
+        itemId: item.id,
+        itemType,
+        completed,
+        total: items.length,
+        items,
+      },
+    };
+  }
+
+  if (itemType === 'mcp_tool_call') {
+    return {
+      eventName,
+      status,
+      message:
+        'Tool ' +
+        String(item.server || 'unknown') +
+        '.' +
+        String(item.tool || 'unknown') +
+        ' ' +
+        readableStatus(status),
+      attributes: {
+        itemId: item.id,
+        itemType,
+        server: item.server,
+        tool: item.tool,
+        itemStatus: item.status,
+        error: item.error ?? null,
+      },
+    };
+  }
+
+  if (itemType === 'web_search') {
+    return {
+      eventName,
+      status: 'info',
+      message: 'Web search: ' + String(item.query || ''),
+      attributes: {
+        itemId: item.id,
+        itemType,
+        query: item.query,
+      },
+    };
+  }
+
+  if (itemType === 'error') {
+    return {
+      eventName,
+      status: 'failed',
+      message: 'Codex item error: ' + String(item.message || 'Unknown error'),
+      attributes: {
+        itemId: item.id,
+        itemType,
+        message: item.message,
+      },
+    };
+  }
+
+  return {
+    eventName,
+    status,
+    message: 'Codex ' + itemType + ' ' + readableStatus(status),
+    attributes: {
+      itemId: item.id,
+      itemType,
+      itemStatus: item.status,
+    },
+  };
+}
+
+function mapCodexItemStatus(itemStatus, eventType) {
+  if (itemStatus === 'failed') {
+    return 'failed';
+  }
+
+  if (itemStatus === 'completed') {
+    return 'succeeded';
+  }
+
+  if (itemStatus === 'in_progress' || eventType === 'item.started') {
+    return 'running';
+  }
+
+  return eventType === 'item.completed' ? 'succeeded' : 'info';
+}
+
+function readableStatus(status) {
+  if (status === 'succeeded') {
+    return 'completed';
+  }
+
+  return status;
+}
+
+function summarizeFileChanges(changes) {
+  if (!changes.length) {
+    return 'none reported';
+  }
+
+  return changes
+    .slice(0, 5)
+    .map((change) => String(change.kind || 'update') + ':' + String(change.path || 'unknown'))
+    .join(', ');
 }
 
 async function verifyCommerceWorkspace(options = {}) {
@@ -625,7 +923,41 @@ function runCommand(command, options) {
     });
     const stdoutChunks = [];
     const stderrChunks = [];
+    const lineHandlerPromises = [];
+    let stdoutRemainder = '';
     let settled = false;
+
+    function handleStdoutText(text) {
+      if (!options.onStdoutLine) {
+        return;
+      }
+
+      stdoutRemainder += text;
+      const lines = stdoutRemainder.split(/\r?\n/);
+      stdoutRemainder = lines.pop() || '';
+
+      for (const line of lines) {
+        lineHandlerPromises.push(
+          Promise.resolve(options.onStdoutLine(line)).catch((error) => {
+            console.warn('[command-stream] stdout line handler failed', error);
+          }),
+        );
+      }
+    }
+
+    function flushStdoutRemainder() {
+      if (!options.onStdoutLine || !stdoutRemainder) {
+        return;
+      }
+
+      const line = stdoutRemainder;
+      stdoutRemainder = '';
+      lineHandlerPromises.push(
+        Promise.resolve(options.onStdoutLine(line)).catch((error) => {
+          console.warn('[command-stream] stdout line handler failed', error);
+        }),
+      );
+    }
 
     const timeout = setTimeout(() => {
       if (settled) return;
@@ -645,7 +977,9 @@ function runCommand(command, options) {
     }, options.timeoutMs);
 
     child.stdout.on('data', (chunk) => {
-      stdoutChunks.push(Buffer.from(chunk));
+      const buffer = Buffer.from(chunk);
+      stdoutChunks.push(buffer);
+      handleStdoutText(buffer.toString('utf8'));
     });
     child.stderr.on('data', (chunk) => {
       stderrChunks.push(Buffer.from(chunk));
@@ -656,10 +990,12 @@ function runCommand(command, options) {
       clearTimeout(timeout);
       reject(error);
     });
-    child.once('close', (exitCode) => {
+    child.once('close', async (exitCode) => {
       if (settled) return;
       settled = true;
       clearTimeout(timeout);
+      flushStdoutRemainder();
+      await Promise.all(lineHandlerPromises);
       resolve({
         command,
         exitCode,
