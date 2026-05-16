@@ -146,7 +146,6 @@ function getSandboxCredentials() {
 function buildCleanSandboxCommandEnv() {
   return {
     HOME: "/home/vercel-sandbox",
-    PATH: "/usr/local/bin:/usr/bin:/bin",
     COREPACK_ENABLE_DOWNLOAD_PROMPT: "0",
   };
 }
