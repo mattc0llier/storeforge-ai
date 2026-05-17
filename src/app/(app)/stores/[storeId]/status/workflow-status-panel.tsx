@@ -15,7 +15,6 @@ import {
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Separator } from "@/components/ui/separator";
 import type { WorkflowEvent, WorkflowRun } from "@/lib/db/schema";
 import { cn } from "@/lib/utils";
 
@@ -274,140 +273,152 @@ export function WorkflowStatusPanel({
             </div>
           </section>
 
-          <Separator />
-
-          <section>
-            <h2 className="mb-3 text-sm font-semibold">Activity</h2>
-            <div className="space-y-2">
+          <details className="rounded-md border bg-background">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-3 text-sm font-semibold [&::-webkit-details-marker]:hidden">
+              <span>Activity</span>
+              <Badge variant="secondary">{workflowEvents.length} events</Badge>
+            </summary>
+            <div className="space-y-2 border-t p-3">
               {workflowEvents.length ? (
-                workflowEvents.slice(-18).map((event, index, visibleEvents) => {
-                  const previous = visibleEvents[index - 1];
-                  const delta = previous
-                    ? formatDuration(
-                        new Date(event.createdAt).getTime() -
-                          new Date(previous.createdAt).getTime(),
-                      )
-                    : "+0s";
+                workflowEvents
+                  .slice(-18)
+                  .map((event, index, visibleEvents) => {
+                    const previous = visibleEvents[index - 1];
+                    const delta = previous
+                      ? formatDuration(
+                          new Date(event.createdAt).getTime() -
+                            new Date(previous.createdAt).getTime(),
+                        )
+                      : "+0s";
 
-                  return (
-                    <div className="rounded-md border bg-background p-3" key={event.id}>
-                      <div className="flex items-center justify-between gap-2">
-                        <p className="font-mono text-[11px] text-muted-foreground">
-                          {formatTime(event.createdAt)}
+                    return { delta, event };
+                  })
+                  .reverse()
+                  .map(({ delta, event }) => {
+                    return (
+                      <div className="rounded-md border p-3" key={event.id}>
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="font-mono text-[11px] text-muted-foreground">
+                            {formatTime(event.createdAt)}
+                          </p>
+                          <Badge
+                            variant={
+                              event.status === "failed"
+                                ? "destructive"
+                                : "secondary"
+                            }
+                          >
+                            {delta}
+                          </Badge>
+                        </div>
+                        <p className="mt-2 break-words text-sm font-medium leading-5 [overflow-wrap:anywhere]">
+                          {event.message}
                         </p>
-                        <Badge
-                          variant={
-                            event.status === "failed"
-                              ? "destructive"
-                              : "secondary"
-                          }
-                        >
-                          {delta}
-                        </Badge>
+                        <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                          {event.eventName}
+                        </p>
                       </div>
-                      <p className="mt-2 break-words text-sm font-medium leading-5 [overflow-wrap:anywhere]">
-                        {event.message}
-                      </p>
-                      <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
-                        {event.eventName}
-                      </p>
-                    </div>
-                  );
-                })
+                    );
+                  })
               ) : (
-                <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+                <p className="rounded-md border p-3 text-sm text-muted-foreground">
                   Workflow events will appear when generation starts.
                 </p>
               )}
             </div>
-          </section>
+          </details>
 
-          <Separator />
-
-          <section className="space-y-3">
-            <h2 className="text-sm font-semibold">Technical details</h2>
-            <DetailRow
-              label="Run"
-              value={workflowRun?.providerRunId ?? workflowRun?.id ?? "pending"}
-            />
-            <DetailRow
-              label="Workspace"
-              value={workflowRun?.workspacePath ?? "pending"}
-            />
-            <ArtifactLink
-              href={getRecordString(generatedRepository, "url")}
-              label="GitHub"
-              value={
-                getRecordString(generatedRepository, "fullName") ?? "pending"
-              }
-            />
-            <ArtifactLink
-              href={getRecordString(vercelProject, "url")}
-              label="Vercel"
-              value={getRecordString(vercelProject, "name") ?? "pending"}
-            />
-
-            <details className="rounded-md border bg-background p-3">
-              <summary className="cursor-pointer text-sm font-medium">
-                Modified files
-              </summary>
-              <PreformattedList
-                empty="No modified files captured yet."
-                items={
-                  modifiedFiles.length
-                    ? modifiedFiles
-                    : workflowRun?.modifiedFilesSummary
+          <details className="rounded-md border bg-background">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 p-3 text-sm font-semibold [&::-webkit-details-marker]:hidden">
+              <span>Technical details</span>
+              <Badge variant="outline">
+                {workflowRun?.status ?? "pending"}
+              </Badge>
+            </summary>
+            <div className="space-y-3 border-t p-3">
+              <DetailRow
+                label="Run"
+                value={workflowRun?.providerRunId ?? workflowRun?.id ?? "pending"}
+              />
+              <DetailRow
+                label="Workspace"
+                value={workflowRun?.workspacePath ?? "pending"}
+              />
+              <ArtifactLink
+                href={getRecordString(generatedRepository, "url")}
+                label="GitHub"
+                value={
+                  getRecordString(generatedRepository, "fullName") ?? "pending"
                 }
               />
-            </details>
-
-            <details className="rounded-md border bg-background p-3">
-              <summary className="cursor-pointer text-sm font-medium">
-                Build logs
-              </summary>
-              <PreformattedList
-                empty="Build logs will appear after validation starts."
-                items={workflowRun?.logsSummary}
+              <ArtifactLink
+                href={getRecordString(vercelProject, "url")}
+                label="Vercel"
+                value={getRecordString(vercelProject, "name") ?? "pending"}
               />
-            </details>
 
-            <details className="rounded-md border bg-background p-3">
-              <summary className="cursor-pointer text-sm font-medium">
-                Codex activity
-              </summary>
-              <PreformattedList
-                empty="Codex activity will appear once transformation starts."
-                items={workflowRun?.codexActivitySummary}
-              />
-            </details>
-
-            <details className="rounded-md border bg-background p-3">
-              <summary className="cursor-pointer text-sm font-medium">
-                Generated diff
-              </summary>
-              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-3 font-mono text-xs leading-5 text-muted-foreground">
-                {generatedDiff ||
-                  "Generated code diff will appear after the next successful transformation."}
-              </pre>
-            </details>
-
-            {failedCommandOutput ? (
-              <details className="rounded-md border border-destructive/40 bg-background p-3">
-                <summary className="cursor-pointer text-sm font-medium text-destructive">
-                  Failed command output
+              <details className="rounded-md border p-3">
+                <summary className="cursor-pointer text-sm font-medium">
+                  Modified files
                 </summary>
-                <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-destructive/10 p-3 text-xs leading-5 text-destructive">
-                  {failedCommandOutput}
+                <PreformattedList
+                  empty="No modified files captured yet."
+                  items={
+                    modifiedFiles.length
+                      ? modifiedFiles
+                      : workflowRun?.modifiedFilesSummary
+                  }
+                />
+              </details>
+
+              <details className="rounded-md border p-3">
+                <summary className="cursor-pointer text-sm font-medium">
+                  Build logs
+                </summary>
+                <PreformattedList
+                  empty="Build logs will appear after validation starts."
+                  items={workflowRun?.logsSummary}
+                />
+              </details>
+
+              <details className="rounded-md border p-3">
+                <summary className="cursor-pointer text-sm font-medium">
+                  Codex activity
+                </summary>
+                <PreformattedList
+                  empty="Codex activity will appear once transformation starts."
+                  items={workflowRun?.codexActivitySummary}
+                />
+              </details>
+
+              <details className="rounded-md border p-3">
+                <summary className="cursor-pointer text-sm font-medium">
+                  Generated diff
+                </summary>
+                <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-3 font-mono text-xs leading-5 text-muted-foreground">
+                  {generatedDiff ||
+                    "Generated code diff will appear after the next successful transformation."}
                 </pre>
               </details>
-            ) : null}
 
-            {workflowRun?.errorMessage ? (
-              <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-                {workflowRun.errorMessage}
-              </p>
-            ) : null}
-          </section>
+              {failedCommandOutput ? (
+                <details className="rounded-md border border-destructive/40 p-3">
+                  <summary className="cursor-pointer text-sm font-medium text-destructive">
+                    Failed command output
+                  </summary>
+                  <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-destructive/10 p-3 text-xs leading-5 text-destructive">
+                    {failedCommandOutput}
+                  </pre>
+                </details>
+              ) : null}
+
+              {workflowRun?.errorMessage ? (
+                <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                  {workflowRun.errorMessage}
+                </p>
+              ) : null}
+            </div>
+          </details>
         </div>
       </aside>
 

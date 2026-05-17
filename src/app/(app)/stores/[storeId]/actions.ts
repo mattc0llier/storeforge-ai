@@ -7,6 +7,7 @@ import { revalidatePath } from "next/cache";
 import { runStoreGeneration } from "@/lib/store-generation/generation-runner";
 import { regenerateProductConcept } from "@/lib/store-generation/blueprint-generator";
 import { generateAndUploadBlueprintImages } from "@/lib/store-generation/image-assets";
+import type { StoreBlueprint } from "@/lib/store-generation/store-blueprint";
 import { getStoreJob, updateStoreBlueprint } from "@/lib/stores/repository";
 import {
   createGenerationWorkflowRun,
@@ -31,6 +32,12 @@ export async function launchStoreAction(storeId: string) {
 
   if (latestRun?.status === "running" || latestRun?.status === "queued") {
     redirect(`/stores/${storeId}/status`);
+  }
+
+  if (!hasGeneratedProductImages(store.blueprint)) {
+    throw new Error(
+      "Generate product images before creating the final Commerce store.",
+    );
   }
 
   const workflowRun = await createGenerationWorkflowRun(storeId);
@@ -140,6 +147,12 @@ function shouldAwaitGenerationStartup() {
   }
 
   return runtime === "sandbox" || process.env.VERCEL === "1";
+}
+
+function hasGeneratedProductImages(blueprint: StoreBlueprint) {
+  return blueprint.products.every((product) =>
+    product.imageUrl.includes("blob.vercel-storage.com"),
+  );
 }
 
 async function getCurrentUserId() {

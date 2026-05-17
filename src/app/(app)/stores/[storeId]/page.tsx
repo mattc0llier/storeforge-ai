@@ -259,12 +259,28 @@ export default async function StoreBlueprintPage({
             </Button>
           ) : (
             <form action={launchStoreAction.bind(null, store.id)}>
-              <Button className="w-full" size="lg" type="submit">
+              <Button
+                className="w-full"
+                disabled={!hasGeneratedProductImages}
+                size="lg"
+                title={
+                  hasGeneratedProductImages
+                    ? undefined
+                    : "Generate product images before creating the final store."
+                }
+                type="submit"
+              >
                 <Rocket />
                 Generate store
               </Button>
             </form>
           )}
+          {!hasGeneratedProductImages && !isWorkflowActive ? (
+            <p className="text-xs text-muted-foreground">
+              Generate product images first so the final Commerce store uses
+              your approved catalog assets.
+            </p>
+          ) : null}
           {store.status === "deployed" && latestDeployment?.productionUrl ? (
             <Button asChild size="lg" variant="secondary">
               <a

@@ -11,19 +11,22 @@ export function BlueprintGenerationTrigger({
   storeId: string;
 }) {
   const router = useRouter();
-  const startedRef = useRef(false);
+  const startedPhaseRef = useRef<"concept" | "catalog" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (startedRef.current) {
+    const phase = hasConcept ? "catalog" : "concept";
+
+    if (startedPhaseRef.current === phase) {
       return;
     }
 
-    startedRef.current = true;
+    startedPhaseRef.current = phase;
 
     async function generateBlueprint() {
       try {
-        await runBlueprintPhase(storeId, hasConcept ? "catalog" : "concept");
+        setError(null);
+        await runBlueprintPhase(storeId, phase);
         router.refresh();
       } catch (generationError) {
         setError(
