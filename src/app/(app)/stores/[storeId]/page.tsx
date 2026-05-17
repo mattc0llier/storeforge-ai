@@ -1,4 +1,5 @@
 import {
+  ExternalLink,
   ImagePlus,
   Palette,
   RefreshCw,
@@ -18,7 +19,10 @@ import {
 } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { getLatestWorkflowRunForStore } from "@/lib/stores/workflow-runs";
-import { getStoreJob } from "@/lib/stores/repository";
+import {
+  getLatestDeploymentMetadataForStore,
+  getStoreJob,
+} from "@/lib/stores/repository";
 
 import {
   generateProductImagesAction,
@@ -33,9 +37,10 @@ export default async function StoreBlueprintPage({
   params: Promise<{ storeId: string }>;
 }) {
   const { storeId } = await params;
-  const [store, latestRun] = await Promise.all([
+  const [store, latestRun, latestDeployment] = await Promise.all([
     getStoreJob(storeId),
     getLatestWorkflowRunForStore(storeId),
+    getLatestDeploymentMetadataForStore(storeId),
   ]);
 
   if (!store) {
@@ -94,6 +99,18 @@ export default async function StoreBlueprintPage({
                 </Button>
               </form>
             )}
+            {store.status === "deployed" && latestDeployment?.productionUrl ? (
+              <Button asChild size="lg" variant="secondary">
+                <a
+                  href={latestDeployment.productionUrl}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <ExternalLink />
+                  View live store
+                </a>
+              </Button>
+            ) : null}
             {latestRun?.status === "running" || latestRun?.status === "queued" ? (
               <Button disabled size="lg" variant="outline">
                 <RefreshCw />

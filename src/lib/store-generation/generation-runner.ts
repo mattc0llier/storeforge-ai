@@ -284,12 +284,22 @@ function getSandboxJobEnvironment(input: StoreGenerationRunInput) {
     WORKFLOW_RUN_ID: input.workflowRunId,
     NEXT_PUBLIC_SUPABASE_URL: process.env.NEXT_PUBLIC_SUPABASE_URL,
     SUPABASE_SERVICE_ROLE_KEY: process.env.SUPABASE_SERVICE_ROLE_KEY,
+    VERCEL: process.env.VERCEL,
     CODEX_API_KEY: process.env.CODEX_API_KEY,
     OPENAI_API_KEY: process.env.CODEX_API_KEY,
     CODEX_BASE_URL: process.env.CODEX_BASE_URL,
     CODEX_MODEL: process.env.CODEX_MODEL,
     CODEX_CLI_PACKAGE: process.env.CODEX_CLI_PACKAGE ?? "@openai/codex@0.130.0",
     CODEX_SANDBOX_MODE: process.env.CODEX_SANDBOX_MODE ?? "danger-full-access",
+    GITHUB_TOKEN: process.env.GITHUB_TOKEN,
+    STOREFORGE_GITHUB_OWNER: process.env.STOREFORGE_GITHUB_OWNER,
+    STOREFORGE_GITHUB_OWNER_TYPE:
+      process.env.STOREFORGE_GITHUB_OWNER_TYPE ?? "user",
+    STOREFORGE_GITHUB_REPO_VISIBILITY:
+      process.env.STOREFORGE_GITHUB_REPO_VISIBILITY ?? "private",
+    STOREFORGE_DEPLOYMENT_ENABLED: process.env.STOREFORGE_DEPLOYMENT_ENABLED,
+    VERCEL_TOKEN: process.env.VERCEL_TOKEN,
+    VERCEL_TEAM_ID: process.env.VERCEL_TEAM_ID,
     PNPM_VERSION: "10.33.0",
   });
 }
@@ -304,6 +314,7 @@ function compactEnv(values: Record<string, string | undefined>) {
 
 function buildSandboxJobScript() {
   return String.raw`import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { readFile, writeFile } from 'node:fs/promises';
 
 const WORKSPACE = '/vercel/sandbox';
@@ -318,6 +329,8 @@ const storeId = requiredEnv('STORE_ID');
 const workflowRunId = requiredEnv('WORKFLOW_RUN_ID');
 const supabaseUrl = requiredEnv('NEXT_PUBLIC_SUPABASE_URL');
 const supabaseServiceRoleKey = requiredEnv('SUPABASE_SERVICE_ROLE_KEY');
+const shouldDeployGeneratedStore =
+  process.env.STOREFORGE_DEPLOYMENT_ENABLED === 'true';
 
 const blueprint = JSON.parse(await readFile(BLUEPRINT_PATH, 'utf8'));
 const productAssets = JSON.parse(await readFile(PRODUCT_ASSETS_PATH, 'utf8'));
@@ -476,6 +489,9 @@ async function main() {
     exitCode: command.exitCode,
     durationMs: command.durationMs,
   }));
+  const deploymentResult = verification.ok
+    ? await publishGeneratedStore({ modifiedFiles, generatedDiff })
+    : null;
 
   await patchWorkflowRun({
     status: verification.ok ? 'succeeded' : 'failed',
@@ -496,6 +512,9 @@ async function main() {
       modifiedFiles,
       generatedDiff,
       sandboxWorkspacePath: WORKSPACE,
+      generatedRepository: deploymentResult?.repository ?? null,
+      vercelProject: deploymentResult?.project ?? null,
+      vercelDeployment: deploymentResult?.deployment ?? null,
     },
     completedAt: new Date().toISOString(),
     errorMessage: verification.ok
@@ -511,13 +530,446 @@ async function main() {
     { repairAttemptsUsed },
   );
 
-  await patchStoreStatus(verification.ok ? 'generated' : 'failed');
+  await patchStoreStatus(
+    verification.ok
+      ? deploymentResult?.deployment?.status === 'ready'
+        ? 'deployed'
+        : 'generated'
+      : 'failed',
+  );
 
   if (!verification.ok) {
     throw new Error(
       'Commerce verification failed after ' + repairAttemptsUsed + ' repair attempts',
     );
   }
+}
+
+async function publishGeneratedStore({ modifiedFiles, generatedDiff }) {
+  if (!shouldDeployGeneratedStore) {
+    await emitEvent(
+      'preparing_deployment',
+      'succeeded',
+      'Deployment disabled; generated repository artifact metadata persisted',
+    );
+    return null;
+  }
+
+  const githubToken = requiredEnv('GITHUB_TOKEN');
+  const githubOwner = requiredEnv('STOREFORGE_GITHUB_OWNER');
+  const githubOwnerType = process.env.STOREFORGE_GITHUB_OWNER_TYPE || 'user';
+  const visibility = process.env.STOREFORGE_GITHUB_REPO_VISIBILITY || 'private';
+  const vercelToken = requiredEnv('VERCEL_TOKEN');
+  const repoName = await createUniqueRepositoryName({
+    owner: githubOwner,
+    token: githubToken,
+  });
+
+  await patchStoreStatus('deploying');
+  await patchWorkflowRun({
+    currentStep: 'repo',
+    artifactMetadata: {
+      productAssets,
+      heroImagePrompt: blueprint.heroImagePrompt,
+      buildResult: 'passed',
+      modifiedFiles,
+      generatedDiff,
+      sandboxWorkspacePath: WORKSPACE,
+      deploymentEnabled: true,
+      repositoryName: repoName,
+    },
+  });
+  await emitEvent('repo', 'running', 'Creating GitHub repository');
+
+  const repository = await createGitHubRepository({
+    owner: githubOwner,
+    ownerType: githubOwnerType,
+    token: githubToken,
+    repoName,
+    visibility,
+  });
+
+  await patchStoreRepository(repository);
+  await emitEvent(
+    'repo',
+    'running',
+    'Pushing generated code to GitHub',
+    { repository: repository.fullName },
+  );
+  await pushWorkspaceToGitHub({
+    token: githubToken,
+    owner: repository.owner,
+    repoName: repository.name,
+  });
+  await emitEvent('repo', 'succeeded', 'Generated code pushed to GitHub', {
+    repositoryUrl: repository.url,
+  });
+
+  await patchWorkflowRun({
+    currentStep: 'deployment',
+    artifactMetadata: {
+      productAssets,
+      heroImagePrompt: blueprint.heroImagePrompt,
+      buildResult: 'passed',
+      modifiedFiles,
+      generatedDiff,
+      sandboxWorkspacePath: WORKSPACE,
+      generatedRepository: repository,
+    },
+  });
+  await emitEvent('deployment', 'running', 'Creating Vercel project');
+
+  const project = await createVercelProject({
+    token: vercelToken,
+    teamId: process.env.VERCEL_TEAM_ID,
+    projectName: repoName,
+    repository,
+  });
+  await emitEvent('deployment', 'running', 'Triggering production deployment', {
+    projectId: project.id,
+  });
+
+  const deployment = await createVercelDeployment({
+    token: vercelToken,
+    teamId: process.env.VERCEL_TEAM_ID,
+    project,
+    repository,
+  });
+  const deploymentRecordId = await createDeploymentMetadata({
+    project,
+    deployment,
+    status: 'building',
+  });
+  await emitEvent('deployment', 'running', 'Waiting for production deployment', {
+    deploymentUrl: getDeploymentUrl(deployment),
+  });
+  const readyDeployment = await waitForVercelDeployment({
+    token: vercelToken,
+    teamId: process.env.VERCEL_TEAM_ID,
+    deployment,
+  });
+  const deploymentStatus =
+    readyDeployment.readyState === 'READY' ? 'ready' : 'error';
+  const productionUrl = getDeploymentUrl(readyDeployment) || deployment.url;
+
+  await updateDeploymentMetadata(deploymentRecordId, {
+    vercel_deployment_id: readyDeployment.id || deployment.id,
+    deployment_url: productionUrl,
+    production_url: productionUrl,
+    status: deploymentStatus,
+    updated_at: new Date().toISOString(),
+  });
+
+  if (deploymentStatus !== 'ready') {
+    await emitEvent('deployment', 'failed', 'Vercel deployment failed', {
+      deploymentId: readyDeployment.id || deployment.id,
+      readyState: readyDeployment.readyState,
+    });
+    throw new Error(
+      'Vercel deployment failed with state ' +
+        String(readyDeployment.readyState || 'unknown'),
+    );
+  }
+
+  await emitEvent('deployment', 'succeeded', 'Production deployment ready', {
+    deploymentUrl: productionUrl,
+    projectId: project.id,
+  });
+
+  return {
+    repository,
+    project: {
+      id: project.id,
+      name: project.name,
+      url: 'https://vercel.com/' + project.name,
+    },
+    deployment: {
+      id: readyDeployment.id || deployment.id,
+      url: productionUrl,
+      status: deploymentStatus,
+    },
+  };
+}
+
+async function createUniqueRepositoryName({ owner, token }) {
+  const baseName = normalizeRepoName(
+    'storeforge-' + slugify(blueprint.storeName || 'store') + '-' + storeId.slice(0, 8),
+  );
+
+  for (let attempt = 0; attempt < 6; attempt += 1) {
+    const candidate = attempt === 0 ? baseName : baseName + '-' + attempt;
+    const response = await fetch(
+      'https://api.github.com/repos/' + owner + '/' + candidate,
+      {
+        headers: githubHeaders(token),
+      },
+    );
+
+    if (response.status === 404) {
+      return candidate;
+    }
+
+    if (response.ok) {
+      continue;
+    }
+
+    throw new Error(
+      'Failed to check GitHub repository name: ' +
+        response.status +
+        ' ' +
+        (await response.text()),
+    );
+  }
+
+  return baseName + '-' + Date.now().toString(36);
+}
+
+async function createGitHubRepository({
+  owner,
+  ownerType,
+  token,
+  repoName,
+  visibility,
+}) {
+  const endpoint =
+    ownerType === 'org'
+      ? 'https://api.github.com/orgs/' + owner + '/repos'
+      : 'https://api.github.com/user/repos';
+  const response = await fetch(endpoint, {
+    method: 'POST',
+    headers: githubHeaders(token),
+    body: JSON.stringify({
+      name: repoName,
+      private: visibility !== 'public',
+      auto_init: false,
+      description:
+        'Generated StoreForge Commerce storefront for ' + blueprint.storeName,
+    }),
+  });
+
+  if (!response.ok) {
+    throw new Error(
+      'Failed to create GitHub repository: ' +
+        response.status +
+        ' ' +
+        sanitizeSecrets(await response.text()),
+    );
+  }
+
+  const repo = await response.json();
+
+  return {
+    owner: repo.owner?.login || owner,
+    name: repo.name || repoName,
+    fullName: repo.full_name || owner + '/' + repoName,
+    url: repo.html_url || 'https://github.com/' + owner + '/' + repoName,
+    repoId: repo.id,
+  };
+}
+
+async function pushWorkspaceToGitHub({ token, owner, repoName }) {
+  await runCommand('rm -rf .git', { timeoutMs: 30_000 });
+  await runCommand('git init -b main', { timeoutMs: 30_000 });
+  await runCommand('git config user.name "StoreForge AI"', { timeoutMs: 30_000 });
+  await runCommand('git config user.email "storeforge@example.com"', {
+    timeoutMs: 30_000,
+  });
+  await runCommand('git add .', { timeoutMs: 120_000 });
+  await runCommand('git commit -m "Generate StoreForge storefront"', {
+    timeoutMs: 120_000,
+  });
+
+  const remoteUrl =
+    'https://x-access-token:' +
+    encodeURIComponent(token) +
+    '@github.com/' +
+    owner +
+    '/' +
+    repoName +
+    '.git';
+  const push = await runCommand('git push ' + shellQuote(remoteUrl) + ' main', {
+    env: {},
+    timeoutMs: 300_000,
+    redact: [token, encodeURIComponent(token)],
+  });
+
+  if (push.exitCode !== 0) {
+    throw new Error('Failed to push generated repository: ' + summarizeCommand(push));
+  }
+}
+
+async function createVercelProject({ token, teamId, projectName, repository }) {
+  const response = await fetch(
+    withVercelTeam('https://api.vercel.com/v11/projects', teamId),
+    {
+      method: 'POST',
+      headers: vercelHeaders(token),
+      body: JSON.stringify({
+        name: projectName,
+        framework: 'nextjs',
+        gitRepository: {
+          type: 'github',
+          repo: repository.fullName,
+        },
+        installCommand: 'pnpm install',
+        buildCommand: 'pnpm build',
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      'Failed to create Vercel project: ' +
+        response.status +
+        ' ' +
+        sanitizeSecrets(await response.text()),
+    );
+  }
+
+  return response.json();
+}
+
+async function createVercelDeployment({ token, teamId, project, repository }) {
+  const response = await fetch(
+    withVercelTeam(
+      'https://api.vercel.com/v13/deployments?forceNew=1&skipAutoDetectionConfirmation=1',
+      teamId,
+    ),
+    {
+      method: 'POST',
+      headers: vercelHeaders(token),
+      body: JSON.stringify({
+        name: project.name,
+        project: project.id,
+        target: 'production',
+        gitSource: {
+          type: 'github',
+          repoId: repository.repoId,
+          ref: 'main',
+        },
+        meta: {
+          storeforgeStoreId: storeId,
+          storeforgeWorkflowRunId: workflowRunId,
+        },
+      }),
+    },
+  );
+
+  if (!response.ok) {
+    throw new Error(
+      'Failed to create Vercel deployment: ' +
+        response.status +
+        ' ' +
+        sanitizeSecrets(await response.text()),
+    );
+  }
+
+  return response.json();
+}
+
+async function waitForVercelDeployment({ token, teamId, deployment }) {
+  let latest = deployment;
+
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const state = latest.readyState || latest.ready_state;
+
+    if (state === 'READY' || state === 'ERROR' || state === 'CANCELED') {
+      return latest;
+    }
+
+    await sleep(3000);
+
+    const response = await fetch(
+      withVercelTeam(
+        'https://api.vercel.com/v13/deployments/' + (deployment.id || deployment.uid),
+        teamId,
+      ),
+      { headers: vercelHeaders(token) },
+    );
+
+    if (!response.ok) {
+      throw new Error(
+        'Failed to poll Vercel deployment: ' +
+          response.status +
+          ' ' +
+          sanitizeSecrets(await response.text()),
+      );
+    }
+
+    latest = await response.json();
+  }
+
+  return latest;
+}
+
+async function createDeploymentMetadata({ project, deployment, status }) {
+  const id = randomUUID();
+  const deploymentUrl = getDeploymentUrl(deployment);
+
+  await supabaseInsert('/rest/v1/deployment_metadata', {
+    id,
+    store_id: storeId,
+    vercel_project_id: project.id,
+    vercel_deployment_id: deployment.id || deployment.uid || null,
+    deployment_url: deploymentUrl,
+    preview_url: deploymentUrl,
+    production_url: null,
+    environment: 'production',
+    status,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  });
+
+  return id;
+}
+
+async function updateDeploymentMetadata(id, patch) {
+  await supabasePatch('/rest/v1/deployment_metadata?id=eq.' + id, patch);
+}
+
+async function patchStoreRepository(repository) {
+  await supabasePatch('/rest/v1/stores?id=eq.' + storeId, {
+    generated_repo_owner: repository.owner,
+    generated_repo_name: repository.name,
+    generated_repo_full_name: repository.fullName,
+    updated_at: new Date().toISOString(),
+  });
+}
+
+function getDeploymentUrl(deployment) {
+  const url = deployment.alias?.[0] || deployment.url;
+
+  if (!url) {
+    return null;
+  }
+
+  return url.startsWith('http') ? url : 'https://' + url;
+}
+
+function githubHeaders(token) {
+  return {
+    accept: 'application/vnd.github+json',
+    authorization: 'Bearer ' + token,
+    'content-type': 'application/json',
+    'x-github-api-version': '2022-11-28',
+    'user-agent': 'storeforge-ai',
+  };
+}
+
+function vercelHeaders(token) {
+  return {
+    authorization: 'Bearer ' + token,
+    'content-type': 'application/json',
+  };
+}
+
+function withVercelTeam(url, teamId) {
+  if (!teamId) {
+    return url;
+  }
+
+  const separator = url.includes('?') ? '&' : '?';
+  return url + separator + 'teamId=' + encodeURIComponent(teamId);
 }
 
 async function runCodex({ label, promptPath }) {
@@ -934,14 +1386,13 @@ async function ensureDependencies() {
 
 function runCommand(command, options) {
   const startedAt = Date.now();
+  const commandEnv = buildCommandEnv(options.env);
+  const displayCommand = redactSecrets(command, options.redact);
 
   return new Promise((resolve, reject) => {
     const child = spawn('bash', ['-lc', command], {
       cwd: WORKSPACE,
-      env: {
-        ...process.env,
-        ...options.env,
-      },
+      env: commandEnv,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const stdoutChunks = [];
@@ -987,7 +1438,7 @@ function runCommand(command, options) {
       settled = true;
       child.kill('SIGTERM');
       resolve({
-        command,
+        command: displayCommand,
         exitCode: null,
         stdout: Buffer.concat(stdoutChunks).toString('utf8'),
         stderr:
@@ -1000,12 +1451,13 @@ function runCommand(command, options) {
     }, options.timeoutMs);
 
     child.stdout.on('data', (chunk) => {
-      const buffer = Buffer.from(chunk);
-      stdoutChunks.push(buffer);
-      handleStdoutText(buffer.toString('utf8'));
+      const text = redactSecrets(chunk.toString('utf8'), options.redact);
+      stdoutChunks.push(Buffer.from(text));
+      handleStdoutText(text);
     });
     child.stderr.on('data', (chunk) => {
-      stderrChunks.push(Buffer.from(chunk));
+      const text = redactSecrets(chunk.toString('utf8'), options.redact);
+      stderrChunks.push(Buffer.from(text));
     });
     child.once('error', (error) => {
       if (settled) return;
@@ -1020,7 +1472,7 @@ function runCommand(command, options) {
       flushStdoutRemainder();
       await Promise.all(lineHandlerPromises);
       resolve({
-        command,
+        command: displayCommand,
         exitCode,
         stdout: Buffer.concat(stdoutChunks).toString('utf8'),
         stderr: Buffer.concat(stderrChunks).toString('utf8'),
@@ -1028,6 +1480,21 @@ function runCommand(command, options) {
       });
     });
   });
+}
+
+function buildCommandEnv(env = {}) {
+  return {
+    PATH: process.env.PATH,
+    HOME: process.env.HOME,
+    USER: process.env.USER,
+    LOGNAME: process.env.LOGNAME,
+    SHELL: process.env.SHELL,
+    LANG: process.env.LANG,
+    LC_ALL: process.env.LC_ALL,
+    TERM: process.env.TERM,
+    CI: process.env.CI || '1',
+    ...env,
+  };
 }
 
 async function getModifiedFiles() {
@@ -1301,6 +1768,49 @@ function formatUnknownError(error) {
 
 function shellQuote(value) {
   return "'" + String(value).replaceAll("'", "'\\''") + "'";
+}
+
+function slugify(value) {
+  return String(value || 'store')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+function normalizeRepoName(value) {
+  return slugify(value).slice(0, 90) || 'storeforge-store';
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function sanitizeSecrets(value) {
+  let output = String(value ?? '');
+  const secrets = [
+    process.env.GITHUB_TOKEN,
+    process.env.VERCEL_TOKEN,
+    process.env.CODEX_API_KEY,
+    process.env.OPENAI_API_KEY,
+    process.env.SUPABASE_SERVICE_ROLE_KEY,
+  ].filter(Boolean);
+
+  for (const secret of secrets) {
+    output = output.replaceAll(secret, '[redacted]');
+    output = output.replaceAll(encodeURIComponent(secret), '[redacted]');
+  }
+
+  return output;
+}
+
+function redactSecrets(value, extraSecrets = []) {
+  let output = sanitizeSecrets(value);
+
+  for (const secret of extraSecrets.filter(Boolean)) {
+    output = output.replaceAll(secret, '[redacted]');
+  }
+
+  return output;
 }
 
 function tail(value, maxLength = 2000) {

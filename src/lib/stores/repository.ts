@@ -1,4 +1,4 @@
-import { StoreSchema } from "@/lib/db/schema";
+import { DeploymentMetadataSchema, StoreSchema } from "@/lib/db/schema";
 import type { Database, Json } from "@/lib/db/types";
 import { getSupabaseAdminClient } from "@/lib/supabase";
 import {
@@ -124,6 +124,24 @@ export async function getStoreJob(storeId: string) {
   return data ? mapStoreRow(data) : null;
 }
 
+export async function getLatestDeploymentMetadataForStore(storeId: string) {
+  const supabase = getSupabaseAdminClient();
+
+  const { data, error } = await supabase
+    .from("deployment_metadata")
+    .select("*")
+    .eq("store_id", storeId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw new Error(`Failed to load deployment metadata: ${error.message}`);
+  }
+
+  return data ? mapDeploymentMetadataRow(data) : null;
+}
+
 export async function updateStoreBlueprint({
   storeId,
   blueprint,
@@ -242,6 +260,24 @@ function mapStoreRow(row: Database["public"]["Tables"]["stores"]["Row"]) {
     generatedRepoOwner: row.generated_repo_owner,
     generatedRepoName: row.generated_repo_name,
     generatedRepoFullName: row.generated_repo_full_name,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  });
+}
+
+function mapDeploymentMetadataRow(
+  row: Database["public"]["Tables"]["deployment_metadata"]["Row"],
+) {
+  return DeploymentMetadataSchema.parse({
+    id: row.id,
+    storeId: row.store_id,
+    vercelProjectId: row.vercel_project_id,
+    vercelDeploymentId: row.vercel_deployment_id,
+    deploymentUrl: row.deployment_url,
+    previewUrl: row.preview_url,
+    productionUrl: row.production_url,
+    environment: row.environment,
+    status: row.status,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   });

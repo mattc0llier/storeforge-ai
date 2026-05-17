@@ -6,6 +6,7 @@ import {
   CircleDashed,
   CircleDot,
   CircleX,
+  ExternalLink,
   Rocket,
 } from "lucide-react";
 
@@ -66,7 +67,17 @@ const generationSteps = [
   {
     id: "preparing_deployment",
     label: "Preparing deployment",
-    detail: "Persist artifact metadata for the later Vercel deployment step.",
+    detail: "Persist artifact metadata before publishing generated code.",
+  },
+  {
+    id: "repo",
+    label: "Generated code pushed",
+    detail: "Create a GitHub repository and push the transformed Commerce app.",
+  },
+  {
+    id: "deployment",
+    label: "Production deployment ready",
+    detail: "Link the GitHub repository to Vercel and trigger production.",
   },
 ];
 
@@ -116,14 +127,22 @@ export function WorkflowStatusPanel({
     };
   }, [storeId, workflowRun?.status]);
 
-  const stepStates = useMemo(() => {
-    return getStepStates(workflowRun);
-  }, [workflowRun]);
-
   const modifiedFiles = getArtifactStringArray(workflowRun, "modifiedFiles");
   const generatedDiff = getArtifactString(workflowRun, "generatedDiff");
   const failedCommandOutput = getFailedCommandOutput(workflowRun);
   const timing = getWorkflowTiming(workflowEvents);
+  const generatedRepository = getArtifactRecord(
+    workflowRun,
+    "generatedRepository",
+  );
+  const vercelProject = getArtifactRecord(workflowRun, "vercelProject");
+  const vercelDeployment = getArtifactRecord(workflowRun, "vercelDeployment");
+  const deploymentEnabled =
+    generatedRepository !== null ||
+    getArtifactBoolean(workflowRun, "deploymentEnabled");
+  const stepStates = useMemo(() => {
+    return getStepStates(workflowRun, deploymentEnabled);
+  }, [deploymentEnabled, workflowRun]);
 
   return (
     <div className="space-y-6">
@@ -167,6 +186,37 @@ export function WorkflowStatusPanel({
           })}
         </CardContent>
       </Card>
+
+      {generatedRepository || vercelProject || vercelDeployment ? (
+        <Card>
+          <CardHeader>
+            <CardTitle>Generated Store</CardTitle>
+            <CardDescription>
+              Repository and deployment links will appear as the publish stage
+              completes.
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-3 md:grid-cols-3">
+            <ArtifactLink
+              href={getRecordString(generatedRepository, "url")}
+              label="GitHub repository"
+              value={
+                getRecordString(generatedRepository, "fullName") ?? "pending"
+              }
+            />
+            <ArtifactLink
+              href={getRecordString(vercelProject, "url")}
+              label="Vercel project"
+              value={getRecordString(vercelProject, "name") ?? "pending"}
+            />
+            <ArtifactLink
+              href={getRecordString(vercelDeployment, "url")}
+              label="Live deployment"
+              value={getRecordString(vercelDeployment, "status") ?? "pending"}
+            />
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader>
@@ -346,7 +396,38 @@ function Metric({ label, value }: { label: string; value: string }) {
   );
 }
 
-function getStepStates(workflowRun: WorkflowRun | null) {
+function ArtifactLink({
+  href,
+  label,
+  value,
+}: {
+  href?: string | null;
+  label: string;
+  value: string;
+}) {
+  return (
+    <div className="rounded-md border p-3 text-sm">
+      <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">
+        {label}
+      </p>
+      {href ? (
+        <a
+          className="mt-1 inline-flex max-w-full items-center gap-1 break-all font-medium underline-offset-4 hover:underline"
+          href={href}
+          rel="noreferrer"
+          target="_blank"
+        >
+          {value}
+          <ExternalLink className="size-3.5 shrink-0" />
+        </a>
+      ) : (
+        <p className="mt-1 break-words text-muted-foreground">{value}</p>
+      )}
+    </div>
+  );
+}
+
+function getStepStates(workflowRun: WorkflowRun | null, deploymentEnabled: boolean) {
   const states: Record<
     string,
     "pending" | "running" | "complete" | "failed" | "skipped"
@@ -375,7 +456,9 @@ function getStepStates(workflowRun: WorkflowRun | null) {
   if (workflowRun.status === "succeeded") {
     for (const step of generationSteps) {
       states[step.id] =
-        step.id === "repair" && workflowRun.repairCount === 0
+        (step.id === "repo" || step.id === "deployment") && !deploymentEnabled
+          ? "skipped"
+          : step.id === "repair" && workflowRun.repairCount === 0
           ? "skipped"
           : "complete";
     }
@@ -464,6 +547,28 @@ function getArtifactString(workflowRun: WorkflowRun | null, key: string) {
   return typeof value === "string" ? value : "";
 }
 
+function getArtifactBoolean(workflowRun: WorkflowRun | null, key: string) {
+  const value = workflowRun?.artifactMetadata[key];
+
+  return typeof value === "boolean" ? value : false;
+}
+
+function getArtifactRecord(workflowRun: WorkflowRun | null, key: string) {
+  const value = workflowRun?.artifactMetadata[key];
+
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+
+  return value as Record<string, unknown>;
+}
+
+function getRecordString(record: Record<string, unknown> | null, key: string) {
+  const value = record?.[key];
+
+  return typeof value === "string" && value.trim() ? value : null;
+}
+
 function getFailedCommandOutput(workflowRun: WorkflowRun | null) {
   const value = workflowRun?.artifactMetadata.failedCommandOutput;
 
@@ -490,11 +595,7 @@ function getWorkflowTiming(events: WorkflowEvent[]) {
 }
 
 function formatTime(value: string) {
-  return new Intl.DateTimeFormat(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  }).format(new Date(value));
+  return new Date(value).toISOString().slice(11, 19);
 }
 
 function formatDuration(durationMs: number) {
