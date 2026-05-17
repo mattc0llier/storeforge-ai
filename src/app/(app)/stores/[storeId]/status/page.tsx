@@ -1,6 +1,5 @@
 import { notFound } from "next/navigation";
 
-import { Badge } from "@/components/ui/badge";
 import { getStoreJob } from "@/lib/stores/repository";
 import {
   getLatestWorkflowRunForStore,
@@ -29,24 +28,12 @@ export default async function StoreStatusPage({
     : [];
 
   return (
-    <div className="mx-auto w-full max-w-5xl space-y-6">
-      <div className="space-y-2">
-        <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="outline">Store ID: {store.id.slice(0, 8)}</Badge>
-          <Badge variant="secondary">{store.status}</Badge>
-        </div>
-        <h1 className="text-3xl font-semibold tracking-normal">
-          {store.name} Launch Status
-        </h1>
-        <p className="text-sm text-muted-foreground">
-          Live generation progress, concise logs, and repository artifact
-          metadata for the autonomous Commerce transformation.
-        </p>
-      </div>
-
+    <div className="mx-auto w-full max-w-[1600px]">
       <WorkflowStatusPanel
         initialWorkflowEvents={workflowEvents}
         initialWorkflowRun={workflowRun}
+        initialStoreName={store.name}
+        initialStoreStatus={store.status}
         storeId={store.id}
       />
     </div>
