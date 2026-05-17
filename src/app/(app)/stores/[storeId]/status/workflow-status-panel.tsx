@@ -4,22 +4,20 @@ import { useEffect, useMemo, useState } from "react";
 import {
   CheckCircle2,
   CircleDashed,
-  CircleDot,
   CircleX,
   ExternalLink,
-  Rocket,
+  GitBranch,
+  Globe2,
+  Loader2,
+  Monitor,
+  RefreshCw,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
 import type { WorkflowEvent, WorkflowRun } from "@/lib/db/schema";
+import { cn } from "@/lib/utils";
 
 type WorkflowStatusPayload = {
   ok: true;
@@ -34,6 +32,8 @@ type WorkflowStatusPayload = {
 
 type WorkflowStatusPanelProps = {
   storeId: string;
+  initialStoreName: string;
+  initialStoreStatus: string;
   initialWorkflowRun: WorkflowRun | null;
   initialWorkflowEvents: WorkflowEvent[];
 };
@@ -41,53 +41,66 @@ type WorkflowStatusPanelProps = {
 const generationSteps = [
   {
     id: "workspace",
-    label: "Workspace prepared",
-    detail: "Clone Commerce, install dependencies, and initialize workspace.",
+    label: "Workspace",
+    detail: "Sandbox and Commerce dependencies.",
+  },
+  {
+    id: "preview",
+    label: "Live preview",
+    detail: "Run Commerce dev server in the sandbox.",
   },
   {
     id: "products",
-    label: "Products generated",
-    detail: "Prepare product metadata and placeholder asset URLs.",
+    label: "Products",
+    detail: "Prepare product metadata and assets.",
   },
   {
     id: "codex",
-    label: "Codex transforming storefront",
-    detail: "Apply bounded branding, catalog, content, and theme changes.",
+    label: "Codex transform",
+    detail: "Apply bounded storefront changes.",
   },
   {
     id: "build",
-    label: "Running build",
-    detail: "Run Commerce build and test validation.",
+    label: "Build validation",
+    detail: "Run Commerce build and tests.",
   },
   {
     id: "repair",
-    label: "Repairing build issues",
-    detail: "Allow up to two focused Codex repairs when validation fails.",
+    label: "Repair loop",
+    detail: "Focused fixes when validation fails.",
   },
   {
     id: "preparing_deployment",
-    label: "Preparing deployment",
-    detail: "Persist artifact metadata before publishing generated code.",
+    label: "Artifact",
+    detail: "Persist generated metadata.",
   },
   {
     id: "repo",
-    label: "Generated code pushed",
-    detail: "Create a GitHub repository and push the transformed Commerce app.",
+    label: "Repository",
+    detail: "Push generated code to GitHub.",
   },
   {
     id: "deployment",
-    label: "Production deployment ready",
-    detail: "Link the GitHub repository to Vercel and trigger production.",
+    label: "Production",
+    detail: "Create the Vercel deployment.",
   },
 ];
 
 export function WorkflowStatusPanel({
   storeId,
+  initialStoreName,
+  initialStoreStatus,
   initialWorkflowEvents,
   initialWorkflowRun,
 }: WorkflowStatusPanelProps) {
+  const [store, setStore] = useState({
+    id: storeId,
+    name: initialStoreName,
+    status: initialStoreStatus,
+  });
   const [workflowRun, setWorkflowRun] = useState(initialWorkflowRun);
   const [workflowEvents, setWorkflowEvents] = useState(initialWorkflowEvents);
+  const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
 
   useEffect(() => {
     let active = true;
@@ -104,17 +117,14 @@ export function WorkflowStatusPanel({
       const payload = (await response.json()) as WorkflowStatusPayload;
 
       if (active) {
+        setStore(payload.store);
         setWorkflowRun(payload.workflowRun);
         setWorkflowEvents(payload.workflowEvents);
       }
     }
 
     const interval = window.setInterval(() => {
-      if (
-        workflowRun?.status !== "succeeded" &&
-        workflowRun?.status !== "failed" &&
-        workflowRun?.status !== "canceled"
-      ) {
+      if (!isTerminalWorkflowStatus(workflowRun?.status)) {
         void refresh();
       }
     }, 2000);
@@ -127,6 +137,11 @@ export function WorkflowStatusPanel({
     };
   }, [storeId, workflowRun?.status]);
 
+  const previewUrl = getArtifactString(workflowRun, "previewUrl");
+  const previewStatus =
+    getArtifactString(workflowRun, "previewStatus") ||
+    (previewUrl ? "queued" : "pending");
+  const previewError = getArtifactString(workflowRun, "previewError");
   const modifiedFiles = getArtifactStringArray(workflowRun, "modifiedFiles");
   const generatedDiff = getArtifactString(workflowRun, "generatedDiff");
   const failedCommandOutput = getFailedCommandOutput(workflowRun);
@@ -137,6 +152,13 @@ export function WorkflowStatusPanel({
   );
   const vercelProject = getArtifactRecord(workflowRun, "vercelProject");
   const vercelDeployment = getArtifactRecord(workflowRun, "vercelDeployment");
+  const liveDeploymentUrl = getRecordString(vercelDeployment, "url");
+  const repositoryUrl = getRecordString(generatedRepository, "url");
+  const repositoryName = getRecordString(generatedRepository, "fullName");
+  const visiblePreviewUrl =
+    workflowRun?.status === "succeeded" && liveDeploymentUrl
+      ? liveDeploymentUrl
+      : previewUrl;
   const deploymentEnabled =
     generatedRepository !== null ||
     getArtifactBoolean(workflowRun, "deploymentEnabled");
@@ -144,254 +166,424 @@ export function WorkflowStatusPanel({
     return getStepStates(workflowRun, deploymentEnabled);
   }, [deploymentEnabled, workflowRun]);
 
+  useEffect(() => {
+    if (!visiblePreviewUrl || isTerminalWorkflowStatus(workflowRun?.status)) {
+      return;
+    }
+
+    const interval = window.setInterval(() => {
+      setPreviewRefreshKey((value) => value + 1);
+    }, 12000);
+
+    return () => window.clearInterval(interval);
+  }, [visiblePreviewUrl, workflowRun?.status]);
+
   return (
-    <div className="space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Rocket className="size-5" />
-            Generation Timeline
-          </CardTitle>
-          <CardDescription>
-            StoreForge is running a bounded Commerce repository transformation.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-0">
-          {generationSteps.map((step, index) => {
-            const state = stepStates[step.id] ?? "pending";
-
-            return (
-              <div key={step.id}>
-                <div className="flex gap-4 py-4">
-                  <div className="pt-0.5">{renderStepIcon(state)}</div>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <p className="font-medium">{step.label}</p>
-                      <Badge
-                        variant={
-                          state === "failed" ? "destructive" : "secondary"
-                        }
-                      >
-                        {state}
-                      </Badge>
-                    </div>
-                    <p className="mt-1 text-sm text-muted-foreground">
-                      {step.detail}
-                    </p>
-                  </div>
-                </div>
-                {index < generationSteps.length - 1 ? <Separator /> : null}
+    <div className="overflow-hidden rounded-xl border bg-background shadow-sm lg:grid lg:h-[calc(100vh-8rem)] lg:min-h-[760px] lg:grid-cols-[380px_minmax(0,1fr)]">
+      <aside className="flex min-h-0 flex-col border-b bg-muted/20 lg:border-b-0 lg:border-r">
+        <div className="space-y-4 border-b bg-background p-4">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="outline">Store {store.id.slice(0, 8)}</Badge>
               </div>
-            );
-          })}
-        </CardContent>
-      </Card>
+              <h1 className="mt-3 truncate text-2xl font-semibold">
+                {store.name}
+              </h1>
+            </div>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            <Metric label="Elapsed" value={timing.elapsedLabel} />
+            <Metric label="Events" value={String(workflowEvents.length)} />
+            <Metric
+              label="Repairs"
+              value={String(workflowRun?.repairCount ?? 0)}
+            />
+          </div>
+          {repositoryUrl || liveDeploymentUrl ? (
+            <div className="grid gap-2">
+              <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">
+                Generated output
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {repositoryUrl ? (
+                  <Button asChild size="sm" variant="outline">
+                    <a href={repositoryUrl} rel="noreferrer" target="_blank">
+                      <GitBranch className="size-4" />
+                      GitHub repo
+                      <ExternalLink className="size-3.5" />
+                    </a>
+                  </Button>
+                ) : null}
+                {liveDeploymentUrl ? (
+                  <Button asChild size="sm" variant="default">
+                    <a href={liveDeploymentUrl} rel="noreferrer" target="_blank">
+                      <Globe2 className="size-4" />
+                      Live store
+                      <ExternalLink className="size-3.5" />
+                    </a>
+                  </Button>
+                ) : null}
+              </div>
+              {repositoryName ? (
+                <p className="break-all font-mono text-[11px] text-muted-foreground">
+                  {repositoryName}
+                </p>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
 
-      {generatedRepository || vercelProject || vercelDeployment ? (
-        <Card>
-          <CardHeader>
-            <CardTitle>Generated Store</CardTitle>
-            <CardDescription>
-              Repository and deployment links will appear as the publish stage
-              completes.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-3 md:grid-cols-3">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto p-4">
+          <section>
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <h2 className="text-sm font-semibold">Generation</h2>
+              <Badge variant="outline">
+                {workflowRun?.currentStep ?? "queued"}
+              </Badge>
+            </div>
+            <div className="space-y-1">
+              {generationSteps.map((step) => {
+                const state = stepStates[step.id] ?? "pending";
+
+                return (
+                  <div
+                    className={cn(
+                      "grid grid-cols-[24px_1fr] gap-3 rounded-md px-2 py-2",
+                      state === "running" && "bg-muted",
+                    )}
+                    key={step.id}
+                  >
+                    <div className="pt-0.5">{renderStepIcon(state)}</div>
+                    <div className="min-w-0">
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="truncate text-sm font-medium">
+                          {step.label}
+                        </p>
+                        <span className="text-xs text-muted-foreground">
+                          {state}
+                        </span>
+                      </div>
+                      <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+                        {step.detail}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </section>
+
+          <Separator />
+
+          <section>
+            <h2 className="mb-3 text-sm font-semibold">Activity</h2>
+            <div className="space-y-2">
+              {workflowEvents.length ? (
+                workflowEvents.slice(-18).map((event, index, visibleEvents) => {
+                  const previous = visibleEvents[index - 1];
+                  const delta = previous
+                    ? formatDuration(
+                        new Date(event.createdAt).getTime() -
+                          new Date(previous.createdAt).getTime(),
+                      )
+                    : "+0s";
+
+                  return (
+                    <div className="rounded-md border bg-background p-3" key={event.id}>
+                      <div className="flex items-center justify-between gap-2">
+                        <p className="font-mono text-[11px] text-muted-foreground">
+                          {formatTime(event.createdAt)}
+                        </p>
+                        <Badge
+                          variant={
+                            event.status === "failed"
+                              ? "destructive"
+                              : "secondary"
+                          }
+                        >
+                          {delta}
+                        </Badge>
+                      </div>
+                      <p className="mt-2 break-words text-sm font-medium leading-5 [overflow-wrap:anywhere]">
+                        {event.message}
+                      </p>
+                      <p className="mt-1 break-all font-mono text-[11px] text-muted-foreground">
+                        {event.eventName}
+                      </p>
+                    </div>
+                  );
+                })
+              ) : (
+                <p className="rounded-md border bg-background p-3 text-sm text-muted-foreground">
+                  Workflow events will appear when generation starts.
+                </p>
+              )}
+            </div>
+          </section>
+
+          <Separator />
+
+          <section className="space-y-3">
+            <h2 className="text-sm font-semibold">Technical details</h2>
+            <DetailRow
+              label="Run"
+              value={workflowRun?.providerRunId ?? workflowRun?.id ?? "pending"}
+            />
+            <DetailRow
+              label="Workspace"
+              value={workflowRun?.workspacePath ?? "pending"}
+            />
             <ArtifactLink
               href={getRecordString(generatedRepository, "url")}
-              label="GitHub repository"
+              label="GitHub"
               value={
                 getRecordString(generatedRepository, "fullName") ?? "pending"
               }
             />
             <ArtifactLink
               href={getRecordString(vercelProject, "url")}
-              label="Vercel project"
+              label="Vercel"
               value={getRecordString(vercelProject, "name") ?? "pending"}
             />
-            <ArtifactLink
-              href={getRecordString(vercelDeployment, "url")}
-              label="Live deployment"
-              value={getRecordString(vercelDeployment, "status") ?? "pending"}
-            />
-          </CardContent>
-        </Card>
-      ) : null}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Build Timing</CardTitle>
-          <CardDescription>
-            Persisted workflow events with timestamps for the StoreForge
-            generation trace.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid gap-3 sm:grid-cols-3">
-            <Metric label="Elapsed" value={timing.elapsedLabel} />
-            <Metric label="Events" value={String(workflowEvents.length)} />
-            <Metric
-              label="Trace ID"
-              value={workflowRun?.id.slice(0, 8) ?? "pending"}
-            />
-          </div>
-          <div className="space-y-3">
-            {workflowEvents.length ? (
-              workflowEvents.map((event, index) => {
-                const previous = workflowEvents[index - 1];
-                const delta = previous
-                  ? formatDuration(
-                      new Date(event.createdAt).getTime() -
-                        new Date(previous.createdAt).getTime(),
-                    )
-                  : "+0s";
-
-                return (
-                  <div
-                    key={event.id}
-                    className="grid gap-2 rounded-md border p-3 text-sm sm:grid-cols-[86px_120px_1fr]"
-                  >
-                    <p className="font-mono text-xs text-muted-foreground">
-                      {formatTime(event.createdAt)}
-                    </p>
-                    <div className="flex items-center gap-2">
-                      {renderStepIcon(
-                        event.status === "succeeded"
-                          ? "complete"
-                          : event.status,
-                      )}
-                      <Badge
-                        variant={
-                          event.status === "failed"
-                            ? "destructive"
-                            : "secondary"
-                        }
-                      >
-                        {delta}
-                      </Badge>
-                    </div>
-                    <div className="min-w-0">
-                      <p className="font-medium">{event.message}</p>
-                      <p className="mt-1 break-words font-mono text-xs text-muted-foreground">
-                        {event.eventName}
-                      </p>
-                    </div>
-                  </div>
-                );
-              })
-            ) : (
-              <p className="rounded-md border p-3 text-sm text-muted-foreground">
-                Workflow events will appear after the latest database migration
-                is applied and a generation starts.
-              </p>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>Technical Details</CardTitle>
-          <CardDescription>
-            Concise generation metadata for debugging without crowding the
-            default approval flow.
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <DetailRow
-            label="Generation status"
-            value={workflowRun?.status ?? "not started"}
-          />
-          <DetailRow
-            label="Current step"
-            value={workflowRun?.currentStep ?? "queued"}
-          />
-          <DetailRow
-            label="Repair attempts"
-            value={String(workflowRun?.repairCount ?? 0)}
-          />
-          <DetailRow
-            label="Run ID"
-            value={workflowRun?.providerRunId ?? workflowRun?.id ?? "pending"}
-          />
-          <DetailRow
-            label="Workspace"
-            value={workflowRun?.workspacePath ?? "pending"}
-          />
-
-          <details className="rounded-md border p-4">
-            <summary className="cursor-pointer text-sm font-medium">
-              Modified files
-            </summary>
-            <PreformattedList
-              empty="No modified files captured yet."
-              items={
-                modifiedFiles.length
-                  ? modifiedFiles
-                  : workflowRun?.modifiedFilesSummary
-              }
-            />
-          </details>
-
-          <details className="rounded-md border p-4">
-            <summary className="cursor-pointer text-sm font-medium">
-              Generated code diff
-            </summary>
-            <pre className="mt-3 max-h-[36rem] overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 font-mono text-xs leading-5 text-muted-foreground">
-              {generatedDiff ||
-                "Generated code diff will appear after the next successful transformation."}
-            </pre>
-          </details>
-
-          <details className="rounded-md border p-4">
-            <summary className="cursor-pointer text-sm font-medium">
-              Build logs
-            </summary>
-            <PreformattedList
-              empty="Build logs will appear after validation starts."
-              items={workflowRun?.logsSummary}
-            />
-          </details>
-
-          {failedCommandOutput ? (
-            <details className="rounded-md border border-destructive/40 p-4">
-              <summary className="cursor-pointer text-sm font-medium text-destructive">
-                Failed command output
+            <details className="rounded-md border bg-background p-3">
+              <summary className="cursor-pointer text-sm font-medium">
+                Modified files
               </summary>
-              <pre className="mt-3 max-h-96 overflow-auto whitespace-pre-wrap rounded-md bg-destructive/10 p-3 text-xs leading-5 text-destructive">
-                {failedCommandOutput}
+              <PreformattedList
+                empty="No modified files captured yet."
+                items={
+                  modifiedFiles.length
+                    ? modifiedFiles
+                    : workflowRun?.modifiedFilesSummary
+                }
+              />
+            </details>
+
+            <details className="rounded-md border bg-background p-3">
+              <summary className="cursor-pointer text-sm font-medium">
+                Build logs
+              </summary>
+              <PreformattedList
+                empty="Build logs will appear after validation starts."
+                items={workflowRun?.logsSummary}
+              />
+            </details>
+
+            <details className="rounded-md border bg-background p-3">
+              <summary className="cursor-pointer text-sm font-medium">
+                Codex activity
+              </summary>
+              <PreformattedList
+                empty="Codex activity will appear once transformation starts."
+                items={workflowRun?.codexActivitySummary}
+              />
+            </details>
+
+            <details className="rounded-md border bg-background p-3">
+              <summary className="cursor-pointer text-sm font-medium">
+                Generated diff
+              </summary>
+              <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-3 font-mono text-xs leading-5 text-muted-foreground">
+                {generatedDiff ||
+                  "Generated code diff will appear after the next successful transformation."}
               </pre>
             </details>
-          ) : null}
 
-          <details className="rounded-md border p-4">
-            <summary className="cursor-pointer text-sm font-medium">
-              Codex activity summaries
-            </summary>
-            <PreformattedList
-              empty="Codex activity will appear once transformation starts."
-              items={workflowRun?.codexActivitySummary}
-            />
-          </details>
+            {failedCommandOutput ? (
+              <details className="rounded-md border border-destructive/40 bg-background p-3">
+                <summary className="cursor-pointer text-sm font-medium text-destructive">
+                  Failed command output
+                </summary>
+                <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-destructive/10 p-3 text-xs leading-5 text-destructive">
+                  {failedCommandOutput}
+                </pre>
+              </details>
+            ) : null}
 
-          {workflowRun?.errorMessage ? (
-            <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
-              {workflowRun.errorMessage}
-            </p>
-          ) : null}
-        </CardContent>
-      </Card>
+            {workflowRun?.errorMessage ? (
+              <p className="rounded-md border border-destructive/40 bg-destructive/10 p-3 text-sm text-destructive">
+                {workflowRun.errorMessage}
+              </p>
+            ) : null}
+          </section>
+        </div>
+      </aside>
+
+      <PreviewWorkspace
+        liveDeploymentUrl={liveDeploymentUrl}
+        previewError={previewError}
+        previewRefreshKey={previewRefreshKey}
+        previewStatus={previewStatus}
+        previewUrl={visiblePreviewUrl}
+        rawPreviewUrl={previewUrl}
+        workflowStatus={workflowRun?.status ?? "queued"}
+        onRefresh={() => setPreviewRefreshKey((value) => value + 1)}
+      />
     </div>
+  );
+}
+
+function PreviewWorkspace({
+  liveDeploymentUrl,
+  onRefresh,
+  previewError,
+  previewRefreshKey,
+  previewStatus,
+  previewUrl,
+  rawPreviewUrl,
+  workflowStatus,
+}: {
+  liveDeploymentUrl: string | null;
+  onRefresh: () => void;
+  previewError: string;
+  previewRefreshKey: number;
+  previewStatus: string;
+  previewUrl: string;
+  rawPreviewUrl: string;
+  workflowStatus: string;
+}) {
+  const frameUrl = previewUrl
+    ? buildPreviewFrameUrl(previewUrl, previewRefreshKey)
+    : "";
+  const isLiveDeployment = Boolean(liveDeploymentUrl && previewUrl === liveDeploymentUrl);
+  const isTerminal = isTerminalWorkflowStatus(workflowStatus);
+  const missingPreview = isTerminal && !previewUrl;
+  const isPreviewReady =
+    Boolean(previewUrl) &&
+    (previewStatus === "running" ||
+      previewStatus === "succeeded" ||
+      isLiveDeployment);
+
+  return (
+    <section className="flex min-h-[640px] min-w-0 flex-col bg-[#f7f7f7]">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b bg-background p-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <Monitor className="size-4 shrink-0" />
+          <div className="min-w-0">
+            <p className="text-sm font-medium">
+              {isLiveDeployment ? "Production store" : "Live sandbox preview"}
+            </p>
+            <p className="truncate text-xs text-muted-foreground">
+              {previewUrl ||
+                (previewStatus === "failed"
+                  ? "Preview unavailable"
+                  : "Preparing Commerce preview")}
+            </p>
+          </div>
+        </div>
+        <div className="flex items-center gap-2">
+          <Badge
+            variant={
+              previewStatus === "failed"
+                ? "destructive"
+                : isPreviewReady
+                  ? "secondary"
+                  : "outline"
+            }
+            className="sr-only"
+          >
+            {isLiveDeployment ? "deployed" : previewStatus}
+          </Badge>
+          <Button
+            aria-label="Reload preview"
+            disabled={!previewUrl}
+            onClick={onRefresh}
+            size="icon-sm"
+            type="button"
+            variant="secondary"
+          >
+            <RefreshCw className="size-4" />
+          </Button>
+          {previewUrl ? (
+            <Button asChild size="sm" variant="default">
+              <a href={previewUrl} rel="noreferrer" target="_blank">
+                {isLiveDeployment ? "Open live store" : "Open preview"}
+                <ExternalLink className="size-4" />
+              </a>
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="min-h-0 flex-1 p-3">
+        <div className="flex h-full min-h-[580px] flex-col overflow-hidden rounded-lg border bg-background shadow-sm">
+          <div className="flex h-11 items-center gap-2 border-b px-3">
+            <div className="flex gap-1.5">
+              <span className="size-2.5 rounded-full bg-[#ff5f57]" />
+              <span className="size-2.5 rounded-full bg-[#ffbd2e]" />
+              <span className="size-2.5 rounded-full bg-[#28c840]" />
+            </div>
+            <div className="mx-auto flex max-w-xl flex-1 items-center justify-center rounded-full border bg-muted px-3 py-1 text-xs text-muted-foreground">
+              <span className="truncate">
+                {previewUrl ||
+                  (missingPreview
+                    ? "No sandbox preview was created for this run"
+                    : "Waiting for sandbox preview")}
+              </span>
+            </div>
+          </div>
+
+          <div className="relative min-h-0 flex-1 bg-white">
+            {isPreviewReady ? (
+              <iframe
+                allow="clipboard-read; clipboard-write; fullscreen"
+                className="h-full min-h-[540px] w-full bg-white"
+                key={`${previewUrl}-${previewRefreshKey}`}
+                loading="eager"
+                referrerPolicy="no-referrer-when-downgrade"
+                src={frameUrl}
+                title="StoreForge live storefront preview"
+              />
+            ) : (
+              <div className="flex h-full min-h-[540px] flex-col items-center justify-center gap-4 p-8 text-center">
+                <div className="flex size-14 items-center justify-center rounded-full bg-muted">
+                  {previewStatus === "failed" || missingPreview ? (
+                    <CircleX className="size-6 text-destructive" />
+                  ) : (
+                    <Loader2 className="size-6 animate-spin text-muted-foreground" />
+                  )}
+                </div>
+                <div className="max-w-md space-y-2">
+                  <h2 className="text-xl font-semibold">
+                    {missingPreview
+                      ? "Preview not available"
+                      : previewStatus === "failed"
+                        ? "Preview unavailable"
+                        : "Preparing Commerce preview"}
+                  </h2>
+                  <p className="text-sm text-muted-foreground">
+                    {missingPreview
+                      ? "This generation completed before the live sandbox preview was started. Launch a new store generation to use the iframe preview path."
+                      : previewStatus === "failed"
+                        ? previewError ||
+                          "The generation workflow is continuing without the iframe preview."
+                        : "The sandbox is installing dependencies and starting the Commerce dev server."}
+                  </p>
+                  {rawPreviewUrl ? (
+                    <p className="break-all font-mono text-xs text-muted-foreground">
+                      {rawPreviewUrl}
+                    </p>
+                  ) : null}
+                  <Badge variant="outline">workflow {workflowStatus}</Badge>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    </section>
   );
 }
 
 function Metric({ label, value }: { label: string; value: string }) {
   return (
-    <div className="rounded-md border p-3">
-      <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">
+    <div className="rounded-md border bg-background p-2">
+      <p className="text-[10px] font-medium uppercase tracking-normal text-muted-foreground">
         {label}
       </p>
-      <p className="mt-1 break-words font-mono text-sm">{value}</p>
+      <p className="mt-1 truncate font-mono text-xs">{value}</p>
     </div>
   );
 }
@@ -406,13 +598,13 @@ function ArtifactLink({
   value: string;
 }) {
   return (
-    <div className="rounded-md border p-3 text-sm">
+    <div className="rounded-md border bg-background p-3 text-sm">
       <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">
         {label}
       </p>
       {href ? (
         <a
-          className="mt-1 inline-flex max-w-full items-center gap-1 break-all font-medium underline-offset-4 hover:underline"
+          className="mt-1 inline-flex max-w-full min-w-0 items-center gap-1 break-all font-medium underline-offset-4 hover:underline"
           href={href}
           rel="noreferrer"
           target="_blank"
@@ -421,7 +613,7 @@ function ArtifactLink({
           <ExternalLink className="size-3.5 shrink-0" />
         </a>
       ) : (
-        <p className="mt-1 break-words text-muted-foreground">{value}</p>
+        <p className="mt-1 break-all text-muted-foreground">{value}</p>
       )}
     </div>
   );
@@ -459,8 +651,8 @@ function getStepStates(workflowRun: WorkflowRun | null, deploymentEnabled: boole
         (step.id === "repo" || step.id === "deployment") && !deploymentEnabled
           ? "skipped"
           : step.id === "repair" && workflowRun.repairCount === 0
-          ? "skipped"
-          : "complete";
+            ? "skipped"
+            : "complete";
     }
     return states;
   }
@@ -492,25 +684,33 @@ function getStepStates(workflowRun: WorkflowRun | null, deploymentEnabled: boole
 
 function renderStepIcon(state: string) {
   if (state === "complete") {
-    return <CheckCircle2 className="size-5 text-emerald-400" />;
+    return <CheckCircle2 className="size-4 text-emerald-500" />;
   }
 
   if (state === "failed") {
-    return <CircleX className="size-5 text-destructive" />;
+    return <CircleX className="size-4 text-destructive" />;
   }
 
   if (state === "running") {
-    return <CircleDot className="size-5 text-amber-300" />;
+    return <Loader2 className="size-4 animate-spin text-primary" />;
   }
 
-  return <CircleDashed className="size-5 text-muted-foreground" />;
+  if (state === "skipped") {
+    return <CheckCircle2 className="size-4 text-muted-foreground" />;
+  }
+
+  return <CircleDashed className="size-4 text-muted-foreground" />;
 }
 
 function DetailRow({ label, value }: { label: string; value: string }) {
   return (
-    <div className="grid gap-1 rounded-md border p-3 text-sm sm:grid-cols-[160px_1fr]">
-      <p className="font-medium">{label}</p>
-      <p className="break-words text-muted-foreground">{value}</p>
+    <div className="grid gap-1 rounded-md border bg-background p-3 text-sm">
+      <p className="text-xs font-medium uppercase tracking-normal text-muted-foreground">
+        {label}
+      </p>
+      <p className="break-all font-mono text-xs text-muted-foreground">
+        {value}
+      </p>
     </div>
   );
 }
@@ -525,7 +725,7 @@ function PreformattedList({
   const visibleItems = items?.filter(Boolean) ?? [];
 
   return (
-    <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-xs leading-5 text-muted-foreground">
+    <pre className="mt-3 max-h-80 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted p-3 text-xs leading-5 text-muted-foreground">
       {visibleItems.length ? visibleItems.join("\n") : empty}
     </pre>
   );
@@ -592,6 +792,18 @@ function getWorkflowTiming(events: WorkflowEvent[]) {
   return {
     elapsedLabel: formatDuration(endedAt - startedAt),
   };
+}
+
+function isTerminalWorkflowStatus(status: string | null | undefined) {
+  return status === "succeeded" || status === "failed" || status === "canceled";
+}
+
+function buildPreviewFrameUrl(url: string, refreshKey: number) {
+  if (!refreshKey) {
+    return url;
+  }
+
+  return `${url}${url.includes("?") ? "&" : "?"}storeforgePreview=${refreshKey}`;
 }
 
 function formatTime(value: string) {

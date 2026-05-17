@@ -2,7 +2,11 @@ import { auth } from "@clerk/nextjs/server";
 import { revalidatePath } from "next/cache";
 import { NextResponse } from "next/server";
 
-import { generateStoreBlueprint } from "@/lib/store-generation/blueprint-generator";
+import {
+  generateStoreBlueprint,
+  generateStoreConceptBlueprint,
+  regenerateProductConcept,
+} from "@/lib/store-generation/blueprint-generator";
 import { getStoreJob, updateStoreBlueprint } from "@/lib/stores/repository";
 import { updateStoreStatus } from "@/lib/stores/workflow-runs";
 
@@ -10,7 +14,7 @@ type BlueprintRouteContext = {
   params: Promise<{ storeId: string }>;
 };
 
-export async function POST(_request: Request, { params }: BlueprintRouteContext) {
+export async function POST(request: Request, { params }: BlueprintRouteContext) {
   const { storeId } = await params;
   const store = await getStoreJob(storeId);
 
@@ -39,14 +43,36 @@ export async function POST(_request: Request, { params }: BlueprintRouteContext)
   }
 
   try {
-    const blueprint = await generateStoreBlueprint({
-      prompt: store.originalPrompt,
-    });
+    const phase = new URL(request.url).searchParams.get("phase");
+    const hasConcept = store.blueprint.storeName !== "Generating Store";
+
+    if (phase === "concept" && hasConcept) {
+      return NextResponse.json({
+        ok: true,
+        status: store.status,
+        phase,
+        skipped: true,
+      });
+    }
+
+    const blueprint =
+      phase === "concept"
+        ? await generateStoreConceptBlueprint({
+            prompt: store.originalPrompt,
+          })
+        : phase === "catalog"
+          ? await regenerateProductConcept({
+              originalPrompt: store.originalPrompt,
+              currentBlueprint: store.blueprint,
+            })
+          : await generateStoreBlueprint({
+              prompt: store.originalPrompt,
+            });
 
     const updatedStore = await updateStoreBlueprint({
       storeId,
       blueprint,
-      status: "draft",
+      status: phase === "concept" ? "generating" : "draft",
     });
 
     revalidatePath(`/stores/${storeId}`);
@@ -55,6 +81,7 @@ export async function POST(_request: Request, { params }: BlueprintRouteContext)
     return NextResponse.json({
       ok: true,
       status: updatedStore.status,
+      phase: phase ?? "full",
       storeId,
     });
   } catch (error) {

@@ -4,7 +4,6 @@ import {
   Palette,
   RefreshCw,
   Rocket,
-  Sparkles,
 } from "lucide-react";
 import { notFound } from "next/navigation";
 
@@ -23,6 +22,7 @@ import {
   getLatestDeploymentMetadataForStore,
   getStoreJob,
 } from "@/lib/stores/repository";
+import type { StoreBlueprint } from "@/lib/store-generation/store-blueprint";
 
 import {
   generateProductImagesAction,
@@ -48,9 +48,16 @@ export default async function StoreBlueprintPage({
   }
 
   const blueprint = store.blueprint;
+  const isWorkflowActive =
+    latestRun?.status === "running" || latestRun?.status === "queued";
+  const hasGeneratedProductImages = blueprint.products.some((product) =>
+    product.imageUrl.includes("blob.vercel-storage.com"),
+  );
 
   if (store.status === "generating") {
-    return <GeneratingBlueprintPage storeId={store.id} />;
+    return (
+      <GeneratingBlueprintPage blueprint={blueprint} storeId={store.id} />
+    );
   }
 
   return (
@@ -84,37 +91,12 @@ export default async function StoreBlueprintPage({
           <Separator />
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            {latestRun?.status === "running" || latestRun?.status === "queued" ? (
+            {isWorkflowActive ? (
               <Button asChild size="lg">
                 <a href={`/stores/${store.id}/status`}>
                   <Rocket />
-                  View Launch
+                  View generation
                 </a>
-              </Button>
-            ) : (
-              <form action={launchStoreAction.bind(null, store.id)}>
-                <Button size="lg" type="submit">
-                  <Rocket />
-                  Launch Store
-                </Button>
-              </form>
-            )}
-            {store.status === "deployed" && latestDeployment?.productionUrl ? (
-              <Button asChild size="lg" variant="secondary">
-                <a
-                  href={latestDeployment.productionUrl}
-                  rel="noreferrer"
-                  target="_blank"
-                >
-                  <ExternalLink />
-                  View live store
-                </a>
-              </Button>
-            ) : null}
-            {latestRun?.status === "running" || latestRun?.status === "queued" ? (
-              <Button disabled size="lg" variant="outline">
-                <RefreshCw />
-                Regenerate product concept
               </Button>
             ) : (
               <form action={regenerateProductConceptAction.bind(null, store.id)}>
@@ -124,27 +106,10 @@ export default async function StoreBlueprintPage({
                 </Button>
               </form>
             )}
-            <Button disabled size="lg" variant="outline">
-              <Sparkles />
-              Regenerate brand
-            </Button>
-            {latestRun?.status === "running" || latestRun?.status === "queued" ? (
-              <Button disabled size="lg" variant="outline">
-                <ImagePlus />
-                Generate images
-              </Button>
-            ) : (
-              <form action={generateProductImagesAction.bind(null, store.id)}>
-                <Button size="lg" type="submit" variant="outline">
-                  <ImagePlus />
-                  Generate images
-                </Button>
-              </form>
-            )}
           </div>
           <p className="text-xs text-muted-foreground">
-            Launch approval will connect to the repository transformation flow
-            in the next implementation step.
+            Tune the concept here, then review catalog imagery before the final
+            store generation step.
           </p>
         </div>
       </section>
@@ -197,25 +162,62 @@ export default async function StoreBlueprintPage({
         </Card>
 
         <Card>
-          <CardHeader>
-            <CardTitle>Launch Catalog</CardTitle>
-            <CardDescription>
-              Small enough to transform safely, specific enough to make the demo
-              feel real.
-            </CardDescription>
+          <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <div className="space-y-1.5">
+              <CardTitle>Launch Catalog</CardTitle>
+              <CardDescription>
+                Small enough to transform safely, specific enough to make the
+                demo feel real.
+              </CardDescription>
+            </div>
+            {isWorkflowActive ? (
+              <Button disabled size="sm" variant="secondary">
+                <ImagePlus />
+                Generate images
+              </Button>
+            ) : (
+              <form action={generateProductImagesAction.bind(null, store.id)}>
+                <Button
+                  size="sm"
+                  type="submit"
+                  variant={hasGeneratedProductImages ? "secondary" : "default"}
+                >
+                  <ImagePlus />
+                  {hasGeneratedProductImages
+                    ? "Regenerate images"
+                    : "Generate images for product concepts"}
+                </Button>
+              </form>
+            )}
           </CardHeader>
           <CardContent className="space-y-4">
+            {!hasGeneratedProductImages ? (
+              <p className="text-xs text-muted-foreground">
+                Use the button above to generate product images from these
+                concepts before creating the final Commerce repository.
+              </p>
+            ) : null}
             {blueprint.products.map((product) => (
               <div
                 className="flex flex-col gap-3 rounded-md border p-4 sm:flex-row sm:items-start"
                 key={product.id}
               >
-                <div
-                  aria-label={product.imageAlt}
-                  className="aspect-square size-16 shrink-0 rounded-md border bg-cover bg-center"
-                  role="img"
-                  style={{ backgroundImage: `url(${product.imageUrl})` }}
-                />
+                {hasGeneratedProductImages ? (
+                  <div
+                    aria-label={product.imageAlt}
+                    className="aspect-square size-16 shrink-0 rounded-md border bg-cover bg-center"
+                    role="img"
+                    style={{ backgroundImage: `url(${product.imageUrl})` }}
+                  />
+                ) : (
+                  <div
+                    aria-label="Product image placeholder"
+                    className="flex aspect-square size-16 shrink-0 items-center justify-center rounded-md border bg-muted"
+                    role="img"
+                  >
+                    <ImagePlus className="size-5 text-muted-foreground" />
+                  </div>
+                )}
                 <div className="min-w-0 flex-1 space-y-1">
                   <div className="flex flex-wrap items-center gap-2">
                     <p className="font-medium">{product.title}</p>
@@ -238,71 +240,181 @@ export default async function StoreBlueprintPage({
           </CardContent>
         </Card>
       </section>
+
+      <section className="rounded-lg border bg-card p-6 shadow-sm sm:flex sm:items-center sm:justify-between sm:gap-6 sm:p-8">
+        <div className="space-y-2">
+          <h2 className="text-2xl font-semibold">Ready to generate the store?</h2>
+          <p className="max-w-2xl text-sm text-muted-foreground">
+            Once the brand, products, palette, and product images feel right,
+            generate the Commerce repository and deployment workflow.
+          </p>
+        </div>
+        <div className="mt-5 flex flex-col gap-3 sm:mt-0 sm:min-w-56">
+          {isWorkflowActive ? (
+            <Button asChild size="lg">
+              <a href={`/stores/${store.id}/status`}>
+                <Rocket />
+                View generation
+              </a>
+            </Button>
+          ) : (
+            <form action={launchStoreAction.bind(null, store.id)}>
+              <Button className="w-full" size="lg" type="submit">
+                <Rocket />
+                Generate store
+              </Button>
+            </form>
+          )}
+          {store.status === "deployed" && latestDeployment?.productionUrl ? (
+            <Button asChild size="lg" variant="secondary">
+              <a
+                href={latestDeployment.productionUrl}
+                rel="noreferrer"
+                target="_blank"
+              >
+                <ExternalLink />
+                View live store
+              </a>
+            </Button>
+          ) : null}
+        </div>
+      </section>
     </div>
   );
 }
 
-function GeneratingBlueprintPage({ storeId }: { storeId: string }) {
+function GeneratingBlueprintPage({
+  blueprint,
+  storeId,
+}: {
+  blueprint: StoreBlueprint;
+  storeId: string;
+}) {
+  const hasConcept = blueprint.storeName !== "Generating Store";
+
   return (
     <div className="mx-auto w-full max-w-6xl space-y-6">
-      <BlueprintGenerationTrigger storeId={storeId} />
+      <BlueprintGenerationTrigger hasConcept={hasConcept} storeId={storeId} />
 
       <section className="space-y-6 rounded-lg border bg-card p-6 shadow-sm sm:p-8">
-        <div className="h-8 w-44 animate-pulse rounded-full bg-muted" />
+        <Badge variant="outline">Store ID: {storeId.slice(0, 8)}</Badge>
 
         <div className="max-w-3xl space-y-4">
-          <div className="h-14 w-2/3 animate-pulse rounded-xl bg-muted" />
-          <div className="h-8 w-1/2 animate-pulse rounded-xl bg-muted" />
+          {hasConcept ? (
+            <>
+              <h1 className="text-4xl font-semibold tracking-normal sm:text-5xl">
+                {blueprint.storeName}
+              </h1>
+              <p className="text-xl text-muted-foreground">
+                {blueprint.tagline}
+              </p>
+            </>
+          ) : (
+            <>
+              <div className="h-14 w-2/3 animate-pulse rounded-xl bg-muted" />
+              <div className="h-8 w-1/2 animate-pulse rounded-xl bg-muted" />
+            </>
+          )}
         </div>
 
         <div className="grid gap-4 sm:grid-cols-3">
-          <SkeletonMetric />
-          <SkeletonMetric />
-          <SkeletonMetric />
+          {hasConcept ? (
+            <>
+              <Metric label="Audience" value={blueprint.targetAudience} />
+              <SkeletonMetric label="Products" />
+              <SkeletonMetric label="Hero product" />
+            </>
+          ) : (
+            <>
+              <SkeletonMetric label="Audience" />
+              <SkeletonMetric label="Products" />
+              <SkeletonMetric label="Hero product" />
+            </>
+          )}
         </div>
 
         <Separator />
 
-        <div className="flex flex-wrap gap-3">
-          <div className="h-11 w-40 animate-pulse rounded-full bg-muted" />
-          <div className="h-11 w-64 animate-pulse rounded-full bg-muted" />
-          <div className="h-11 w-44 animate-pulse rounded-full bg-muted" />
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="h-10 w-10 animate-spin rounded-full border-2 border-muted border-t-primary" />
+          <p className="text-sm text-muted-foreground">
+            {hasConcept
+              ? "Brand concept ready. Generating product catalog next."
+              : "Generating brand concept."}
+          </p>
         </div>
       </section>
 
       <section className="grid gap-6 lg:grid-cols-[0.9fr_1.1fr]">
         <Card>
           <CardHeader>
-            <div className="h-8 w-40 animate-pulse rounded-lg bg-muted" />
-            <div className="h-5 w-2/3 animate-pulse rounded-lg bg-muted" />
+            <CardTitle className="flex items-center gap-2">
+              <Palette className="size-5" />
+              Direction
+            </CardTitle>
+            {hasConcept ? (
+              <CardDescription>{blueprint.visualDirection}</CardDescription>
+            ) : (
+              <div className="h-5 w-2/3 animate-pulse rounded-lg bg-muted" />
+            )}
           </CardHeader>
           <CardContent className="space-y-5">
             <div className="grid gap-3 sm:grid-cols-2">
-              {Array.from({ length: 4 }).map((_, index) => (
-                <div
-                  className="flex items-center gap-3 rounded-md border p-3"
-                  key={index}
-                >
-                  <div className="size-10 shrink-0 animate-pulse rounded-md bg-muted" />
-                  <div className="flex-1 space-y-2">
-                    <div className="h-4 w-28 animate-pulse rounded bg-muted" />
-                    <div className="h-3 w-20 animate-pulse rounded bg-muted" />
-                  </div>
-                </div>
-              ))}
+              {hasConcept
+                ? blueprint.colorPalette.map((color) => (
+                    <div
+                      className="flex items-center gap-3 rounded-md border p-3"
+                      key={`${color.name}-${color.hex}`}
+                    >
+                      <div
+                        aria-label={`${color.name} swatch`}
+                        className="size-10 shrink-0 rounded-md border"
+                        style={{ backgroundColor: color.hex }}
+                      />
+                      <div className="min-w-0">
+                        <p className="text-sm font-medium">{color.name}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {color.hex}
+                        </p>
+                      </div>
+                    </div>
+                  ))
+                : Array.from({ length: 4 }).map((_, index) => (
+                    <div
+                      className="flex items-center gap-3 rounded-md border p-3"
+                      key={index}
+                    >
+                      <div className="size-10 shrink-0 animate-pulse rounded-md bg-muted" />
+                      <div className="flex-1 space-y-2">
+                        <div className="h-4 w-28 animate-pulse rounded bg-muted" />
+                        <div className="h-3 w-20 animate-pulse rounded bg-muted" />
+                      </div>
+                    </div>
+                  ))}
             </div>
-            <div className="space-y-3">
-              <div className="h-5 w-36 animate-pulse rounded bg-muted" />
-              <div className="h-4 w-full animate-pulse rounded bg-muted" />
-              <div className="h-4 w-3/4 animate-pulse rounded bg-muted" />
-            </div>
+            {hasConcept ? (
+              <div className="space-y-2">
+                <p className="text-sm font-medium">Brand voice</p>
+                <p className="text-sm text-muted-foreground">
+                  {blueprint.brandVoice}
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="h-5 w-36 animate-pulse rounded bg-muted" />
+                <div className="h-4 w-full animate-pulse rounded bg-muted" />
+                <div className="h-4 w-3/4 animate-pulse rounded bg-muted" />
+              </div>
+            )}
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <div className="h-8 w-44 animate-pulse rounded-lg bg-muted" />
-            <div className="h-5 w-2/3 animate-pulse rounded-lg bg-muted" />
+            <CardTitle>Launch Catalog</CardTitle>
+            <CardDescription>
+              Products are being generated after the brand concept.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             {Array.from({ length: 3 }).map((_, index) => (
@@ -325,10 +437,12 @@ function GeneratingBlueprintPage({ storeId }: { storeId: string }) {
   );
 }
 
-function SkeletonMetric() {
+function SkeletonMetric({ label }: { label: string }) {
   return (
     <div className="rounded-md border bg-background/60 p-4">
-      <div className="h-4 w-20 animate-pulse rounded bg-muted" />
+      <p className="text-xs font-medium uppercase text-muted-foreground">
+        {label}
+      </p>
       <div className="mt-3 h-5 w-4/5 animate-pulse rounded bg-muted" />
       <div className="mt-2 h-5 w-2/3 animate-pulse rounded bg-muted" />
     </div>

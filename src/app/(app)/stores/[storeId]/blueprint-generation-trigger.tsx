@@ -3,7 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
-export function BlueprintGenerationTrigger({ storeId }: { storeId: string }) {
+export function BlueprintGenerationTrigger({
+  hasConcept,
+  storeId,
+}: {
+  hasConcept: boolean;
+  storeId: string;
+}) {
   const router = useRouter();
   const startedRef = useRef(false);
   const [error, setError] = useState<string | null>(null);
@@ -17,17 +23,7 @@ export function BlueprintGenerationTrigger({ storeId }: { storeId: string }) {
 
     async function generateBlueprint() {
       try {
-        const response = await fetch(`/api/stores/${storeId}/blueprint`, {
-          method: "POST",
-        });
-        const body = (await response.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-
-        if (!response.ok) {
-          throw new Error(body?.error ?? "Blueprint generation failed.");
-        }
-
+        await runBlueprintPhase(storeId, hasConcept ? "catalog" : "concept");
         router.refresh();
       } catch (generationError) {
         setError(
@@ -40,7 +36,7 @@ export function BlueprintGenerationTrigger({ storeId }: { storeId: string }) {
     }
 
     void generateBlueprint();
-  }, [router, storeId]);
+  }, [hasConcept, router, storeId]);
 
   if (!error) {
     return null;
@@ -51,4 +47,17 @@ export function BlueprintGenerationTrigger({ storeId }: { storeId: string }) {
       {error}
     </p>
   );
+}
+
+async function runBlueprintPhase(storeId: string, phase: "concept" | "catalog") {
+  const response = await fetch(`/api/stores/${storeId}/blueprint?phase=${phase}`, {
+    method: "POST",
+  });
+  const body = (await response.json().catch(() => null)) as {
+    error?: string;
+  } | null;
+
+  if (!response.ok) {
+    throw new Error(body?.error ?? "Blueprint generation failed.");
+  }
 }

@@ -1,5 +1,6 @@
 import {
   StoreBlueprintSchema,
+  createPendingStoreBlueprint,
   generateStoreBlueprintFromPrompt,
   type Product,
   type StoreBlueprint,
@@ -11,6 +12,19 @@ const CatalogRegenerationSchema = StoreBlueprintSchema.pick({
   heroProductId: true,
   heroProduct: true,
   heroImagePrompt: true,
+});
+
+const BrandConceptSchema = StoreBlueprintSchema.pick({
+  storeName: true,
+  businessIdea: true,
+  tagline: true,
+  targetAudience: true,
+  visualDirection: true,
+  colorPalette: true,
+  homepageHeadline: true,
+  homepageSubheading: true,
+  brandVoice: true,
+  theme: true,
 });
 
 type OpenAIResponsesBody = {
@@ -59,6 +73,43 @@ export async function generateStoreBlueprint({
     );
   } catch (error) {
     console.warn("[blueprint-generator] falling back to deterministic blueprint", error);
+    return fallback;
+  }
+}
+
+export async function generateStoreConceptBlueprint({
+  prompt,
+}: {
+  prompt: string;
+}): Promise<StoreBlueprint> {
+  const fallback = createConceptBlueprintFromBase(
+    applyImagePromptConcept(generateStoreBlueprintFromPrompt(prompt)),
+  );
+
+  if (!getOpenAIConfig()) {
+    return fallback;
+  }
+
+  try {
+    const concept = BrandConceptSchema.parse(await requestStructuredOutput({
+      schemaName: "store_brand_concept",
+      schema: BRAND_CONCEPT_JSON_SCHEMA,
+      system:
+        "You create the brand concept section of a StoreForge ecommerce blueprint. Return only valid structured data. Prioritize a strong name, tagline, audience, visual direction, and color palette. Do not generate product catalog details.",
+      user: [
+        "Create the brand concept for this ecommerce store idea.",
+        "Keep this fast and concise. Do not invent a full product catalog yet.",
+        "The next step will generate products while preserving this brand and theme.",
+        `Business idea: ${prompt}`,
+      ].join("\n"),
+    }));
+
+    return createConceptBlueprintFromBase(StoreBlueprintSchema.parse({
+      ...fallback,
+      ...concept,
+    }));
+  } catch (error) {
+    console.warn("[blueprint-generator] falling back to deterministic brand concept", error);
     return fallback;
   }
 }
@@ -228,6 +279,19 @@ function createFallbackCatalogVariation(
     heroProduct: heroProduct.title,
     heroImagePrompt: `${heroProduct.imagePrompt} Cinematic ecommerce hero image, premium lighting, uncluttered background, no text.`,
   }));
+}
+
+function createConceptBlueprintFromBase(base: StoreBlueprint): StoreBlueprint {
+  const pending = createPendingStoreBlueprint(base.businessIdea);
+
+  return StoreBlueprintSchema.parse({
+    ...base,
+    catalogStrategy: "Preparing product catalog strategy.",
+    products: pending.products,
+    heroProductId: pending.heroProductId,
+    heroProduct: "Generating hero product.",
+    heroImagePrompt: "Generating hero image prompt.",
+  });
 }
 
 function createFallbackProduct(
@@ -544,4 +608,33 @@ const CATALOG_REGENERATION_JSON_SCHEMA = {
     "heroProduct",
     "heroImagePrompt",
   ],
+} as const;
+
+const BRAND_CONCEPT_JSON_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: [
+    "storeName",
+    "businessIdea",
+    "tagline",
+    "targetAudience",
+    "visualDirection",
+    "colorPalette",
+    "homepageHeadline",
+    "homepageSubheading",
+    "brandVoice",
+    "theme",
+  ],
+  properties: {
+    storeName: { type: "string" },
+    businessIdea: { type: "string" },
+    tagline: { type: "string" },
+    targetAudience: { type: "string" },
+    visualDirection: { type: "string" },
+    colorPalette: STORE_BLUEPRINT_JSON_SCHEMA.properties.colorPalette,
+    homepageHeadline: { type: "string" },
+    homepageSubheading: { type: "string" },
+    brandVoice: { type: "string" },
+    theme: STORE_BLUEPRINT_JSON_SCHEMA.properties.theme,
+  },
 } as const;

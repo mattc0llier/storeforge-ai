@@ -42,6 +42,9 @@ const SANDBOX_TRANSFORM_PROMPT_PATH = "/tmp/storeforge-transform-prompt.txt";
 const SANDBOX_BLUEPRINT_PATH = "/tmp/storeforge-blueprint.json";
 const SANDBOX_PRODUCT_ASSETS_PATH = "/tmp/storeforge-product-assets.json";
 const SANDBOX_JOB_PATH = "/tmp/storeforge-sandbox-job.mjs";
+const SANDBOX_PREVIEW_PORT = Number(
+  process.env.STOREFORGE_LIVE_PREVIEW_PORT ?? 3000,
+);
 
 export type StoreGenerationRunInput = {
   storeId: string;
@@ -149,6 +152,7 @@ async function startSandboxStoreGeneration(
       source: "blueprint-placeholder" as const,
     }));
 
+    const livePreviewEnabled = shouldEnableLivePreview();
     const sandbox = await Sandbox.create({
       ...getSandboxCredentials(),
       source: getSandboxSource(),
@@ -156,7 +160,11 @@ async function startSandboxStoreGeneration(
       resources: { vcpus: 4 },
       timeout: Number(process.env.STOREFORGE_SANDBOX_TIMEOUT_MS ?? 2700000),
       env: getSandboxJobEnvironment(input),
+      ports: livePreviewEnabled ? [SANDBOX_PREVIEW_PORT] : undefined,
     } as Parameters<typeof Sandbox.create>[0]);
+    const previewUrl = livePreviewEnabled
+      ? sandbox.domain(SANDBOX_PREVIEW_PORT)
+      : null;
 
     const transformPrompt = buildCommerceTransformPrompt({
       blueprint: store.blueprint,
@@ -179,12 +187,37 @@ async function startSandboxStoreGeneration(
         content: buildSandboxJobScript(),
       },
     ]);
+    const syntaxCheck = await sandbox.runCommand({
+      cmd: "node",
+      args: ["--check", SANDBOX_JOB_PATH],
+      cwd: SANDBOX_WORKSPACE_PATH,
+    });
+
+    if (syntaxCheck.exitCode !== 0) {
+      const stderr = await syntaxCheck.stderr();
+      const stdout = await syntaxCheck.stdout();
+
+      throw new Error(
+        [
+          "Generated sandbox job failed syntax validation",
+          stdout.trim() ? `stdout:\n${stdout}` : "",
+          stderr.trim() ? `stderr:\n${stderr}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+      );
+    }
 
     const command = await sandbox.runCommand({
       cmd: "node",
       args: [SANDBOX_JOB_PATH],
       cwd: SANDBOX_WORKSPACE_PATH,
       detached: true,
+      env: compactEnv({
+        STOREFORGE_LIVE_PREVIEW_ENABLED: livePreviewEnabled ? "true" : "false",
+        STOREFORGE_PREVIEW_PORT: String(SANDBOX_PREVIEW_PORT),
+        STOREFORGE_PREVIEW_URL: previewUrl ?? undefined,
+      }),
     });
 
     const sandboxPath = SANDBOX_WORKSPACE_PATH;
@@ -200,6 +233,9 @@ async function startSandboxStoreGeneration(
         sandboxCommandId: command.cmdId,
         sandboxSource: getSandboxSourceLabel(),
         workspacePath: sandboxPath,
+        previewUrl,
+        previewPort: livePreviewEnabled ? SANDBOX_PREVIEW_PORT : null,
+        previewStatus: livePreviewEnabled ? "queued" : "disabled",
         productAssets,
         heroImagePrompt: store.blueprint.heroImagePrompt,
       },
@@ -241,6 +277,10 @@ function shouldUseSandboxGeneration() {
   }
 
   return process.env.VERCEL === "1";
+}
+
+function shouldEnableLivePreview() {
+  return process.env.STOREFORGE_LIVE_PREVIEW_ENABLED !== "false";
 }
 
 function getSandboxCredentials() {
@@ -331,6 +371,13 @@ const supabaseUrl = requiredEnv('NEXT_PUBLIC_SUPABASE_URL');
 const supabaseServiceRoleKey = requiredEnv('SUPABASE_SERVICE_ROLE_KEY');
 const shouldDeployGeneratedStore =
   process.env.STOREFORGE_DEPLOYMENT_ENABLED === 'true';
+const livePreviewEnabled =
+  process.env.STOREFORGE_LIVE_PREVIEW_ENABLED === 'true' &&
+  Boolean(process.env.STOREFORGE_PREVIEW_URL);
+const previewUrl = process.env.STOREFORGE_PREVIEW_URL || null;
+const previewPort = Number(process.env.STOREFORGE_PREVIEW_PORT || '3000');
+let previewStatus = livePreviewEnabled ? 'queued' : 'disabled';
+let previewError = null;
 
 const blueprint = JSON.parse(await readFile(BLUEPRINT_PATH, 'utf8'));
 const productAssets = JSON.parse(await readFile(PRODUCT_ASSETS_PATH, 'utf8'));
@@ -357,20 +404,19 @@ async function main() {
     currentStep: 'workspace',
     workspacePath: WORKSPACE,
     logsSummary: ['Sandbox generation job started'],
-    artifactMetadata: {
-      productAssets,
-      heroImagePrompt: blueprint.heroImagePrompt,
-      sandboxWorkspacePath: WORKSPACE,
-    },
+    artifactMetadata: buildArtifactMetadata(),
   });
   await emitEvent('workspace', 'running', 'Checking Commerce dependencies');
   const install = await ensureDependencies();
+  await startPreviewServer();
   await patchWorkflowRun({
     currentStep: 'products',
     logsSummary: summarizeLines([
       'Sandbox generation job started',
       summarizeCommand(install),
+      previewUrl ? 'Preview URL: ' + previewUrl : 'Live preview disabled',
     ]),
+    artifactMetadata: buildArtifactMetadata(),
   });
   await emitEvent(
     'workspace',
@@ -501,9 +547,7 @@ async function main() {
     modifiedFilesSummary,
     codexActivitySummary: summarizeLines(codexActivity),
     workspacePath: WORKSPACE,
-    artifactMetadata: {
-      productAssets,
-      heroImagePrompt: blueprint.heroImagePrompt,
+    artifactMetadata: buildArtifactMetadata({
       buildResult: verification.ok ? 'passed' : 'failed',
       commandResults,
       failedCommandOutput: verification.failedCommand
@@ -511,11 +555,10 @@ async function main() {
         : null,
       modifiedFiles,
       generatedDiff,
-      sandboxWorkspacePath: WORKSPACE,
       generatedRepository: deploymentResult?.repository ?? null,
       vercelProject: deploymentResult?.project ?? null,
       vercelDeployment: deploymentResult?.deployment ?? null,
-    },
+    }),
     completedAt: new Date().toISOString(),
     errorMessage: verification.ok
       ? null
@@ -545,6 +588,109 @@ async function main() {
   }
 }
 
+async function startPreviewServer() {
+  if (!livePreviewEnabled || !previewUrl) {
+    return;
+  }
+
+  previewStatus = 'running';
+  await patchWorkflowRun({
+    currentStep: 'preview',
+    logsSummary: ['Starting Commerce live preview'],
+    artifactMetadata: buildArtifactMetadata(),
+  });
+  await emitEvent('preview', 'running', 'Starting Commerce live preview', {
+    previewUrl,
+    previewPort,
+  });
+
+  const command =
+    PNPM +
+    ' dev --hostname 0.0.0.0 --port ' +
+    String(previewPort);
+  const child = spawn('bash', ['-lc', command], {
+    cwd: WORKSPACE,
+    detached: true,
+    env: buildCommandEnv({
+      NODE_ENV: 'development',
+      NEXT_TELEMETRY_DISABLED: '1',
+      SITE_NAME: blueprint.storeName,
+      COMPANY_NAME: blueprint.storeName,
+      SHOPIFY_REVALIDATION_SECRET: 'storeforge-preview',
+      SHOPIFY_STORE_DOMAIN: '',
+      SHOPIFY_STOREFRONT_ACCESS_TOKEN: '',
+    }),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let exitCode = null;
+  let previewOutput = '';
+
+  child.once('exit', (code) => {
+    exitCode = code;
+  });
+  child.stdout?.on('data', (chunk) => {
+    previewOutput = tail(previewOutput + chunk.toString('utf8'), 4000);
+  });
+  child.stderr?.on('data', (chunk) => {
+    previewOutput = tail(previewOutput + chunk.toString('utf8'), 4000);
+  });
+  child.unref();
+
+  const localUrl = 'http://127.0.0.1:' + String(previewPort);
+  const deadline = Date.now() + 60_000;
+
+  while (Date.now() < deadline) {
+    if (exitCode !== null) {
+      previewStatus = 'failed';
+      previewError =
+        'Preview dev server exited early with code ' +
+        String(exitCode) +
+        (previewOutput ? '\n' + previewOutput : '');
+      await patchWorkflowRun({ artifactMetadata: buildArtifactMetadata() });
+      await emitEvent('preview', 'failed', previewError, { previewUrl });
+      return;
+    }
+
+    try {
+      const response = await fetch(localUrl, { method: 'GET' });
+
+      if (response.status < 500) {
+        previewStatus = 'running';
+        previewError = null;
+        await patchWorkflowRun({ artifactMetadata: buildArtifactMetadata() });
+        await emitEvent('preview', 'succeeded', 'Commerce live preview ready', {
+          previewUrl,
+        });
+        return;
+      }
+    } catch {
+      // Next.js may still be compiling; keep polling until the preview timeout.
+    }
+
+    await sleep(1000);
+  }
+
+  previewStatus = 'failed';
+  previewError =
+    'Preview dev server did not respond within 60 seconds' +
+    (previewOutput ? '\n' + previewOutput : '');
+  await patchWorkflowRun({ artifactMetadata: buildArtifactMetadata() });
+  await emitEvent('preview', 'failed', previewError, { previewUrl });
+}
+
+function buildArtifactMetadata(extra = {}) {
+  return {
+    productAssets,
+    heroImagePrompt: blueprint.heroImagePrompt,
+    sandboxWorkspacePath: WORKSPACE,
+    previewUrl,
+    previewPort: livePreviewEnabled ? previewPort : null,
+    previewStatus,
+    previewError,
+    ...extra,
+  };
+}
+
 async function publishGeneratedStore({ modifiedFiles, generatedDiff }) {
   if (!shouldDeployGeneratedStore) {
     await emitEvent(
@@ -568,16 +714,13 @@ async function publishGeneratedStore({ modifiedFiles, generatedDiff }) {
   await patchStoreStatus('deploying');
   await patchWorkflowRun({
     currentStep: 'repo',
-    artifactMetadata: {
-      productAssets,
-      heroImagePrompt: blueprint.heroImagePrompt,
+    artifactMetadata: buildArtifactMetadata({
       buildResult: 'passed',
       modifiedFiles,
       generatedDiff,
-      sandboxWorkspacePath: WORKSPACE,
       deploymentEnabled: true,
       repositoryName: repoName,
-    },
+    }),
   });
   await emitEvent('repo', 'running', 'Creating GitHub repository');
 
@@ -607,15 +750,12 @@ async function publishGeneratedStore({ modifiedFiles, generatedDiff }) {
 
   await patchWorkflowRun({
     currentStep: 'deployment',
-    artifactMetadata: {
-      productAssets,
-      heroImagePrompt: blueprint.heroImagePrompt,
+    artifactMetadata: buildArtifactMetadata({
       buildResult: 'passed',
       modifiedFiles,
       generatedDiff,
-      sandboxWorkspacePath: WORKSPACE,
       generatedRepository: repository,
-    },
+    }),
   });
   await emitEvent('deployment', 'running', 'Creating Vercel project');
 
