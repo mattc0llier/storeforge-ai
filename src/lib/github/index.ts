@@ -84,7 +84,7 @@ export function buildAuthenticatedGitRemoteUrl({
   repoName: string;
   token?: string;
 }) {
-  return `https://x-access-token:${encodeURIComponent(token)}@github.com/${owner}/${repoName}.git`;
+  return `https://x-access-token:${encodeURIComponent(token.trim())}@github.com/${owner}/${repoName}.git`;
 }
 
 function getRepositoryCreateUrl(owner: string, ownerType: GitHubOwnerType) {
@@ -96,7 +96,7 @@ function getRepositoryCreateUrl(owner: string, ownerType: GitHubOwnerType) {
 function getGitHubHeaders(token: string) {
   return {
     accept: "application/vnd.github+json",
-    authorization: `Bearer ${token}`,
+    authorization: `Bearer ${token.trim()}`,
     "content-type": "application/json",
     "x-github-api-version": "2022-11-28",
     "user-agent": "storeforge-ai",

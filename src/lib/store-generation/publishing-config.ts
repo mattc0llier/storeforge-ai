@@ -12,18 +12,18 @@ export type GeneratedStorePublishingConfig = {
 };
 
 export function getGeneratedStorePublishingConfig(): GeneratedStorePublishingConfig {
+  const ownerType = getOptionalEnv("STOREFORGE_GITHUB_OWNER_TYPE");
+  const visibility = getOptionalEnv("STOREFORGE_GITHUB_REPO_VISIBILITY");
+
   return {
-    deploymentEnabled: process.env.STOREFORGE_DEPLOYMENT_ENABLED === "true",
-    githubOwner: process.env.STOREFORGE_GITHUB_OWNER,
-    githubOwnerType:
-      process.env.STOREFORGE_GITHUB_OWNER_TYPE === "org" ? "org" : "user",
-    githubRepositoryVisibility:
-      process.env.STOREFORGE_GITHUB_REPO_VISIBILITY === "public"
-        ? "public"
-        : "private",
-    githubToken: process.env.GITHUB_TOKEN,
-    vercelTeamId: process.env.VERCEL_TEAM_ID,
-    vercelToken: process.env.VERCEL_TOKEN,
+    deploymentEnabled:
+      getOptionalEnv("STOREFORGE_DEPLOYMENT_ENABLED") === "true",
+    githubOwner: getOptionalEnv("STOREFORGE_GITHUB_OWNER"),
+    githubOwnerType: ownerType === "org" ? "org" : "user",
+    githubRepositoryVisibility: visibility === "public" ? "public" : "private",
+    githubToken: getOptionalEnv("GITHUB_TOKEN"),
+    vercelTeamId: getOptionalEnv("VERCEL_TEAM_ID"),
+    vercelToken: getOptionalEnv("VERCEL_TOKEN"),
   };
 }
 
@@ -63,4 +63,10 @@ export function slugifyGeneratedStoreName(value: string) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/(^-|-$)/g, "");
+}
+
+function getOptionalEnv(key: string) {
+  const value = process.env[key]?.trim();
+
+  return value ? value : undefined;
 }

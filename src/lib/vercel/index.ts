@@ -220,7 +220,7 @@ function mapReadyState(state: string | undefined): VercelDeploymentResult["statu
 
 function getVercelHeaders(token: string) {
   return {
-    authorization: `Bearer ${token}`,
+    authorization: `Bearer ${token.trim()}`,
     "content-type": "application/json",
   };
 }

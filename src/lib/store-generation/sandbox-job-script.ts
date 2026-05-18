@@ -22,12 +22,12 @@ const workflowRunId = requiredEnv('WORKFLOW_RUN_ID');
 const supabaseUrl = requiredEnv('NEXT_PUBLIC_SUPABASE_URL');
 const supabaseServiceRoleKey = requiredEnv('SUPABASE_SERVICE_ROLE_KEY');
 const shouldDeployGeneratedStore =
-  process.env.STOREFORGE_DEPLOYMENT_ENABLED === 'true';
+  optionalEnv('STOREFORGE_DEPLOYMENT_ENABLED') === 'true';
 const livePreviewEnabled =
-  process.env.STOREFORGE_LIVE_PREVIEW_ENABLED === 'true' &&
-  Boolean(process.env.STOREFORGE_PREVIEW_URL);
-const previewUrl = process.env.STOREFORGE_PREVIEW_URL || null;
-const previewPort = Number(process.env.STOREFORGE_PREVIEW_PORT || '3000');
+  optionalEnv('STOREFORGE_LIVE_PREVIEW_ENABLED') === 'true' &&
+  Boolean(optionalEnv('STOREFORGE_PREVIEW_URL'));
+const previewUrl = optionalEnv('STOREFORGE_PREVIEW_URL') || null;
+const previewPort = Number(optionalEnv('STOREFORGE_PREVIEW_PORT') || '3000');
 let previewStatus = livePreviewEnabled ? 'queued' : 'disabled';
 let previewError = null;
 
@@ -358,8 +358,8 @@ async function publishGeneratedStore({ modifiedFiles, generatedDiff }) {
 
   const githubToken = requiredEnv('GITHUB_TOKEN');
   const githubOwner = requiredEnv('STOREFORGE_GITHUB_OWNER');
-  const githubOwnerType = process.env.STOREFORGE_GITHUB_OWNER_TYPE || 'user';
-  const visibility = process.env.STOREFORGE_GITHUB_REPO_VISIBILITY || 'private';
+  const githubOwnerType = optionalEnv('STOREFORGE_GITHUB_OWNER_TYPE') || 'user';
+  const visibility = optionalEnv('STOREFORGE_GITHUB_REPO_VISIBILITY') || 'private';
   const vercelToken = requiredEnv('VERCEL_TOKEN');
   const repoName = await createUniqueRepositoryName({
     owner: githubOwner,
@@ -416,7 +416,7 @@ async function publishGeneratedStore({ modifiedFiles, generatedDiff }) {
 
   const project = await createVercelProject({
     token: vercelToken,
-    teamId: process.env.VERCEL_TEAM_ID,
+    teamId: optionalEnv('VERCEL_TEAM_ID'),
     projectName: repoName,
     repository,
   });
@@ -426,7 +426,7 @@ async function publishGeneratedStore({ modifiedFiles, generatedDiff }) {
 
   const deployment = await createVercelDeployment({
     token: vercelToken,
-    teamId: process.env.VERCEL_TEAM_ID,
+    teamId: optionalEnv('VERCEL_TEAM_ID'),
     project,
     repository,
   });
@@ -440,7 +440,7 @@ async function publishGeneratedStore({ modifiedFiles, generatedDiff }) {
   });
   const readyDeployment = await waitForVercelDeployment({
     token: vercelToken,
-    teamId: process.env.VERCEL_TEAM_ID,
+    teamId: optionalEnv('VERCEL_TEAM_ID'),
     deployment,
   });
   const deploymentStatus =
@@ -574,19 +574,23 @@ async function pushWorkspaceToGitHub({ token, owner, repoName }) {
     timeoutMs: 120_000,
   });
 
-  const remoteUrl =
-    'https://x-access-token:' +
-    encodeURIComponent(token) +
-    '@github.com/' +
-    owner +
-    '/' +
-    repoName +
-    '.git';
-  const push = await runCommand('git push ' + shellQuote(remoteUrl) + ' main', {
-    env: {},
-    timeoutMs: 300_000,
-    redact: [token, encodeURIComponent(token)],
-  });
+  const remoteUrl = 'https://github.com/' + owner + '/' + repoName + '.git';
+  const encodedCredentials = Buffer.from('x-access-token:' + token).toString(
+    'base64',
+  );
+  const authHeader = 'AUTHORIZATION: basic ' + encodedCredentials;
+  const push = await runCommand(
+    'git -c ' +
+      shellQuote('http.https://github.com/.extraheader=' + authHeader) +
+      ' push ' +
+      shellQuote(remoteUrl) +
+      ' main',
+    {
+      env: {},
+      timeoutMs: 300_000,
+      redact: [token, encodeURIComponent(token), encodedCredentials, authHeader],
+    },
+  );
 
   if (push.exitCode !== 0) {
     throw new Error('Failed to push generated repository: ' + summarizeCommand(push));
@@ -744,7 +748,7 @@ function getDeploymentUrl(deployment) {
 function githubHeaders(token) {
   return {
     accept: 'application/vnd.github+json',
-    authorization: 'Bearer ' + token,
+    authorization: 'Bearer ' + token.trim(),
     'content-type': 'application/json',
     'x-github-api-version': '2022-11-28',
     'user-agent': 'storeforge-ai',
@@ -753,7 +757,7 @@ function githubHeaders(token) {
 
 function vercelHeaders(token) {
   return {
-    authorization: 'Bearer ' + token,
+    authorization: 'Bearer ' + token.trim(),
     'content-type': 'application/json',
   };
 }
@@ -1536,13 +1540,19 @@ function buildInstallEnv() {
 }
 
 function requiredEnv(key) {
-  const value = process.env[key];
+  const value = optionalEnv(key);
 
   if (!value) {
     throw new Error('Missing required environment variable: ' + key);
   }
 
   return value;
+}
+
+function optionalEnv(key) {
+  const value = process.env[key]?.trim();
+
+  return value ? value : undefined;
 }
 
 function formatUnknownError(error) {
@@ -1588,7 +1598,11 @@ function sanitizeSecrets(value) {
     process.env.CODEX_API_KEY,
     process.env.OPENAI_API_KEY,
     process.env.SUPABASE_SERVICE_ROLE_KEY,
-  ].filter(Boolean);
+  ].flatMap((secret) => {
+    const trimmed = secret?.trim();
+
+    return trimmed && trimmed !== secret ? [secret, trimmed] : [secret];
+  }).filter(Boolean);
 
   for (const secret of secrets) {
     output = output.replaceAll(secret, '[redacted]');
