@@ -1,6 +1,5 @@
 import {
   ExternalLink,
-  ImagePlus,
   Palette,
   RefreshCw,
   Rocket,
@@ -30,6 +29,7 @@ import {
   regenerateProductConceptAction,
 } from "./actions";
 import { BlueprintGenerationTrigger } from "./blueprint-generation-trigger";
+import { ImageGenerationForm } from "./image-generation-form";
 
 export default async function StoreBlueprintPage({
   params,
@@ -50,9 +50,11 @@ export default async function StoreBlueprintPage({
   const blueprint = store.blueprint;
   const isWorkflowActive =
     latestRun?.status === "running" || latestRun?.status === "queued";
-  const hasGeneratedProductImages = blueprint.products.some((product) =>
+  const generatedProductImageCount = blueprint.products.filter((product) =>
     product.imageUrl.includes("blob.vercel-storage.com"),
-  );
+  ).length;
+  const hasGeneratedProductImages =
+    generatedProductImageCount === blueprint.products.length;
 
   if (store.status === "generating") {
     return (
@@ -162,82 +164,14 @@ export default async function StoreBlueprintPage({
         </Card>
 
         <Card>
-          <CardHeader className="gap-4 sm:flex-row sm:items-start sm:justify-between">
-            <div className="space-y-1.5">
-              <CardTitle>Launch Catalog</CardTitle>
-              <CardDescription>
-                Small enough to transform safely, specific enough to make the
-                demo feel real.
-              </CardDescription>
-            </div>
-            {isWorkflowActive ? (
-              <Button disabled size="sm" variant="secondary">
-                <ImagePlus />
-                Generate images
-              </Button>
-            ) : (
-              <form action={generateProductImagesAction.bind(null, store.id)}>
-                <Button
-                  size="sm"
-                  type="submit"
-                  variant={hasGeneratedProductImages ? "secondary" : "default"}
-                >
-                  <ImagePlus />
-                  {hasGeneratedProductImages
-                    ? "Regenerate images"
-                    : "Generate images for product concepts"}
-                </Button>
-              </form>
-            )}
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {!hasGeneratedProductImages ? (
-              <p className="text-xs text-muted-foreground">
-                Use the button above to generate product images from these
-                concepts before creating the final Commerce repository.
-              </p>
-            ) : null}
-            {blueprint.products.map((product) => (
-              <div
-                className="flex flex-col gap-3 rounded-md border p-4 sm:flex-row sm:items-start"
-                key={product.id}
-              >
-                {hasGeneratedProductImages ? (
-                  <div
-                    aria-label={product.imageAlt}
-                    className="aspect-square size-16 shrink-0 rounded-md border bg-cover bg-center"
-                    role="img"
-                    style={{ backgroundImage: `url(${product.imageUrl})` }}
-                  />
-                ) : (
-                  <div
-                    aria-label="Product image placeholder"
-                    className="flex aspect-square size-16 shrink-0 items-center justify-center rounded-md border bg-muted"
-                    role="img"
-                  >
-                    <ImagePlus className="size-5 text-muted-foreground" />
-                  </div>
-                )}
-                <div className="min-w-0 flex-1 space-y-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <p className="font-medium">{product.title}</p>
-                    {product.id === blueprint.heroProductId ? (
-                      <Badge variant="secondary">Hero</Badge>
-                    ) : null}
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    {product.description}
-                  </p>
-                  <p className="line-clamp-2 text-xs text-muted-foreground">
-                    Image prompt: {product.imagePrompt}
-                  </p>
-                </div>
-                <p className="text-sm font-semibold">
-                  ${product.price} {product.currencyCode}
-                </p>
-              </div>
-            ))}
-          </CardContent>
+          <ImageGenerationForm
+            action={generateProductImagesAction.bind(null, store.id)}
+            disabled={isWorkflowActive}
+            generatedImageCount={generatedProductImageCount}
+            hasGeneratedProductImages={hasGeneratedProductImages}
+            heroProductId={blueprint.heroProductId}
+            products={blueprint.products}
+          />
         </Card>
       </section>
 
