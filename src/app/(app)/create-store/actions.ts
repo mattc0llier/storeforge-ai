@@ -1,6 +1,7 @@
 "use server";
 
 import { auth } from "@clerk/nextjs/server";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { z } from "zod";
 
@@ -13,6 +14,8 @@ const CreateStoreFormSchema = z.object({
     .min(10, "Describe the store idea in at least 10 characters.")
     .max(1200, "Keep the spike prompt under 1,200 characters."),
 });
+
+const PendingPromptCookieName = "storeforge_pending_prompt";
 
 export type CreateStoreActionState = {
   error?: string;
@@ -35,9 +38,16 @@ export async function createStoreAction(
   const userId = await getCurrentUserId();
 
   if (!userId) {
-    return {
-      error: "Sign in before creating a StoreForge workspace.",
-    };
+    const cookieStore = await cookies();
+    cookieStore.set(PendingPromptCookieName, parsed.data.prompt, {
+      httpOnly: true,
+      maxAge: 10 * 60,
+      path: "/",
+      sameSite: "lax",
+      secure: process.env.NODE_ENV === "production",
+    });
+
+    redirect("/sign-in?redirect_url=/create-store");
   }
 
   try {
@@ -45,6 +55,9 @@ export async function createStoreAction(
       userId,
       originalPrompt: parsed.data.prompt,
     });
+
+    const cookieStore = await cookies();
+    cookieStore.delete(PendingPromptCookieName);
 
     redirect(`/stores/${store.id}`);
   } catch (error) {
@@ -59,6 +72,12 @@ export async function createStoreAction(
           : "Store blueprint generation failed.",
     };
   }
+}
+
+export async function getPendingCreateStorePrompt() {
+  const cookieStore = await cookies();
+
+  return cookieStore.get(PendingPromptCookieName)?.value ?? "";
 }
 
 async function getCurrentUserId() {

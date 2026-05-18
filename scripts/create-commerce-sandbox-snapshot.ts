@@ -71,7 +71,6 @@ async function main() {
           sourceSandboxId: snapshot.sourceSandboxId,
           expiresAt: snapshot.expiresAt,
           env: {
-            STOREFORGE_GENERATION_RUNTIME: "sandbox",
             STOREFORGE_COMMERCE_SANDBOX_SNAPSHOT_ID: snapshot.snapshotId,
           },
         },

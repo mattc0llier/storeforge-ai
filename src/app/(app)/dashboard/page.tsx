@@ -1,9 +1,17 @@
 import Link from "next/link";
-import { ArrowRight, GitBranch, Rocket, Store, Workflow } from "lucide-react";
+import {
+  ArrowRight,
+  ExternalLink,
+  GitBranch,
+  Rocket,
+  Store,
+  Workflow,
+} from "lucide-react";
 import { auth } from "@clerk/nextjs/server";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { DashboardLogoutLink } from "@/components/dashboard-logout-link";
 import {
   Card,
   CardAction,
@@ -23,16 +31,19 @@ import {
 import { getStoreDashboardData } from "@/lib/stores/repository";
 
 export default async function DashboardPage() {
-  const userId = await getCurrentUserId();
-  const dashboard = userId
-    ? await getStoreDashboardData({ userId, limit: 20 })
+  const authContext = await getDashboardAuthContext();
+  const dashboard = authContext.userId
+    ? await getStoreDashboardData({ userId: authContext.userId, limit: 20 })
     : {
         stores: [],
         storeCount: 0,
         workflowRunCount: 0,
         deploymentCount: 0,
-      };
+  };
   const latestStore = dashboard.stores[0];
+  const latestLiveStoreUrl =
+    latestStore?.latestDeployment?.productionUrl ??
+    latestStore?.latestDeployment?.deploymentUrl;
 
   return (
     <div className="space-y-8">
@@ -106,16 +117,23 @@ export default async function DashboardPage() {
           </CardDescription>
           <CardAction>
             <Button variant="outline" size="sm" asChild>
-              <Link
-                href={
-                  latestStore
-                    ? `/stores/${latestStore.id}/status`
-                    : "/create-store"
-                }
-              >
-                {latestStore ? "View latest status" : "Create store"}
-                <ArrowRight />
-              </Link>
+              {latestLiveStoreUrl ? (
+                <a href={latestLiveStoreUrl} rel="noreferrer" target="_blank">
+                  View latest store
+                  <ExternalLink />
+                </a>
+              ) : (
+                <Link
+                  href={
+                    latestStore
+                      ? `/stores/${latestStore.id}/status`
+                      : "/create-store"
+                  }
+                >
+                  {latestStore ? "View latest status" : "Create store"}
+                  <ArrowRight />
+                </Link>
+              )}
             </Button>
           </CardAction>
         </CardHeader>
@@ -133,37 +151,80 @@ export default async function DashboardPage() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {dashboard.stores.map((store) => (
-                  <TableRow key={store.id}>
-                    <TableCell className="font-medium">
-                      <Link
-                        className="hover:underline"
-                        href={`/stores/${store.id}`}
-                      >
-                        {store.name}
-                      </Link>
-                    </TableCell>
-                    <TableCell>
-                      <Badge variant="outline">{store.status}</Badge>
-                    </TableCell>
-                    <TableCell>{store.productCount}</TableCell>
-                    <TableCell className="font-mono text-xs text-muted-foreground">
-                      <span className="inline-flex items-center gap-1">
-                        <GitBranch className="size-3" />
-                        {store.generatedRepoFullName ?? "pending"}
-                      </span>
-                    </TableCell>
-                    <TableCell>{formatDeploymentLabel(store.status)}</TableCell>
-                    <TableCell className="text-right">
-                      <Button variant="outline" size="sm" asChild>
-                        <Link href={`/stores/${store.id}/status`}>
-                          View
-                          <ArrowRight />
-                        </Link>
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
+                {dashboard.stores.map((store) => {
+                  const liveStoreUrl =
+                    store.latestDeployment?.productionUrl ??
+                    store.latestDeployment?.deploymentUrl;
+
+                  return (
+                    <TableRow key={store.id}>
+                      <TableCell className="font-medium">
+                        {liveStoreUrl ? (
+                          <a
+                            className="inline-flex items-center gap-1 hover:underline"
+                            href={liveStoreUrl}
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            {store.name}
+                            <ExternalLink className="size-3" />
+                          </a>
+                        ) : (
+                          <Link
+                            className="hover:underline"
+                            href={`/stores/${store.id}`}
+                          >
+                            {store.name}
+                          </Link>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant="outline">{store.status}</Badge>
+                      </TableCell>
+                      <TableCell>{store.productCount}</TableCell>
+                      <TableCell className="font-mono text-xs text-muted-foreground">
+                        <span className="inline-flex items-center gap-1">
+                          <GitBranch className="size-3" />
+                          {store.generatedRepoFullName ?? "pending"}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        {liveStoreUrl ? (
+                          <a
+                            className="inline-flex items-center gap-1 hover:underline"
+                            href={liveStoreUrl}
+                            rel="noreferrer"
+                            target="_blank"
+                          >
+                            ready
+                            <ExternalLink className="size-3" />
+                          </a>
+                        ) : (
+                          formatDeploymentLabel(store.status)
+                        )}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Button variant="outline" size="sm" asChild>
+                          {liveStoreUrl ? (
+                            <a
+                              href={liveStoreUrl}
+                              rel="noreferrer"
+                              target="_blank"
+                            >
+                              Visit
+                              <ExternalLink />
+                            </a>
+                          ) : (
+                            <Link href={`/stores/${store.id}/status`}>
+                              Status
+                              <ArrowRight />
+                            </Link>
+                          )}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
               </TableBody>
             </Table>
           ) : (
@@ -185,21 +246,33 @@ export default async function DashboardPage() {
           )}
         </CardContent>
       </Card>
+
+      {authContext.canSignOut ? (
+        <div className="flex justify-center pb-2">
+          <DashboardLogoutLink />
+        </div>
+      ) : null}
     </div>
   );
 }
 
-async function getCurrentUserId() {
+async function getDashboardAuthContext() {
   if (
     !process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY ||
     !process.env.CLERK_SECRET_KEY
   ) {
-    return "dev-user";
+    return {
+      canSignOut: false,
+      userId: "dev-user",
+    };
   }
 
   const session = await auth();
 
-  return session.userId;
+  return {
+    canSignOut: Boolean(session.userId),
+    userId: session.userId,
+  };
 }
 
 function formatDeploymentLabel(status: string) {

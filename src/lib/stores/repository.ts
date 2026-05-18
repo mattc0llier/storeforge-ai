@@ -30,10 +30,14 @@ type StoreDashboardInput = {
 };
 
 export type StoreDashboardData = {
-  stores: Awaited<ReturnType<typeof mapStoreRow>>[];
+  stores: DashboardStore[];
   storeCount: number;
   workflowRunCount: number;
   deploymentCount: number;
+};
+
+export type DashboardStore = ReturnType<typeof mapStoreRow> & {
+  latestDeployment: ReturnType<typeof mapDeploymentMetadataRow> | null;
 };
 
 export async function createStoreJob({
@@ -219,7 +223,47 @@ async function getLatestStoresForUser(userId: string, limit: number) {
     throw new Error(`Failed to load dashboard stores: ${error.message}`);
   }
 
-  return data.map(mapStoreRow);
+  const stores = data.map(mapStoreRow);
+  const deploymentsByStoreId = await getLatestDeploymentMetadataForStores(
+    stores.map((store) => store.id),
+  );
+
+  return stores.map((store) => ({
+    ...store,
+    latestDeployment: deploymentsByStoreId.get(store.id) ?? null,
+  }));
+}
+
+async function getLatestDeploymentMetadataForStores(storeIds: string[]) {
+  const deployments = new Map<
+    string,
+    ReturnType<typeof mapDeploymentMetadataRow>
+  >();
+
+  if (!storeIds.length) {
+    return deployments;
+  }
+
+  const supabase = getSupabaseAdminClient();
+  const { data, error } = await supabase
+    .from("deployment_metadata")
+    .select("*")
+    .in("store_id", storeIds)
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    throw new Error(
+      `Failed to load dashboard deployment metadata: ${error.message}`,
+    );
+  }
+
+  for (const row of data) {
+    if (!deployments.has(row.store_id)) {
+      deployments.set(row.store_id, mapDeploymentMetadataRow(row));
+    }
+  }
+
+  return deployments;
 }
 
 async function countRowsForStoreIds(

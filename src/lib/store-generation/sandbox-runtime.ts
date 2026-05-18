@@ -18,20 +18,6 @@ type SandboxGenerationInput = {
   workflowRunId: string;
 };
 
-export function shouldUseSandboxGeneration() {
-  const runtime = process.env.STOREFORGE_GENERATION_RUNTIME;
-
-  if (runtime === "local") {
-    return false;
-  }
-
-  if (runtime === "sandbox") {
-    return true;
-  }
-
-  return process.env.VERCEL === "1";
-}
-
 export function shouldEnableLivePreview() {
   return process.env.STOREFORGE_LIVE_PREVIEW_ENABLED !== "false";
 }

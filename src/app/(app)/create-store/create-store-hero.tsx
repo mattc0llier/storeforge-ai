@@ -3,8 +3,10 @@ import Image from "next/image";
 import { CreateStoreForm } from "./create-store-form";
 
 export function CreateStoreHero({
+  initialPrompt = "",
   showShowcaseImage = false,
 }: {
+  initialPrompt?: string;
   showShowcaseImage?: boolean;
 }) {
   return (
@@ -17,7 +19,7 @@ export function CreateStoreHero({
         </div>
 
         <div className="w-full">
-          <CreateStoreForm />
+          <CreateStoreForm initialPrompt={initialPrompt} />
         </div>
       </div>
 

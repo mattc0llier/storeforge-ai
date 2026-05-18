@@ -1,32 +1,38 @@
 # StoreForge
 
-StoreForge turns a business idea into a deployed ecommerce storefront using autonomous repository transformation.
+StoreForge turns a store idea into a generated ecommerce storefront. It creates a brand blueprint, generates product imagery, transforms a real Next.js Commerce repository in a Vercel Sandbox, validates the build, pushes the generated code to GitHub, and deploys the result to Vercel.
 
-The demo flow is:
+The current architecture is intentionally slim: the Next.js app is the control plane, and Vercel Sandbox is the execution plane.
 
-1. A user describes a store.
-2. StoreForge generates a structured brand concept and product catalog.
-3. Product images are generated and uploaded to Vercel Blob.
-4. A Vercel Sandbox runs a prepared Next.js Commerce workspace.
-5. Codex transforms the Commerce repository with bounded instructions.
-6. The sandbox validates the build and repairs failures.
-7. The generated Commerce app is pushed to GitHub.
-8. Vercel deploys the generated GitHub repository.
+## What It Does
 
-The product goal is reliability first: preserve the Commerce template, change branding and merchandising, and ship a real deployed storefront.
+1. A user enters a store idea on `/` or `/create-store`.
+2. StoreForge creates a store row and immediately redirects to `/stores/[storeId]`.
+3. A brand concept is generated first so the approval page renders quickly.
+4. The product catalog is generated next.
+5. Product images are generated and uploaded to Vercel Blob.
+6. The user approves the concept and clicks **Generate store**.
+7. A Vercel Sandbox starts from the Commerce template snapshot.
+8. Codex CLI transforms the Commerce repository inside the sandbox.
+9. The sandbox runs build validation and up to two repair attempts.
+10. The generated repository is pushed to GitHub.
+11. Vercel creates/deploys the generated storefront.
+12. The status page shows live preview, workflow events, GitHub repo, and production URL.
 
 ## Tech Stack
 
-- Next.js App Router, TypeScript, React 19
+- Next.js App Router, React 19, TypeScript
 - Tailwind CSS v4 and shadcn/ui
 - Clerk authentication
-- Supabase persistence
-- Vercel Blob for generated product images
-- Vercel Sandbox for isolated repository execution and live preview
-- Codex SDK/CLI for repository transformation
+- Supabase for stores, workflow runs, workflow events, and deployment metadata
+- OpenAI Responses API for structured blueprint generation
+- OpenAI image generation for product imagery
+- Vercel Blob for generated product assets
+- Vercel Sandbox for isolated Commerce execution and live preview
+- Codex CLI inside the sandbox for repository transformation
 - GitHub REST API for generated repositories
-- Vercel REST API for generated deployments
-- Zod for blueprint and database validation
+- Vercel REST API for generated projects and deployments
+- Zod for runtime validation
 
 ## Architecture
 
@@ -34,100 +40,100 @@ The product goal is reliability first: preserve the Commerce template, change br
 flowchart TD
   User["User"] --> App["StoreForge Next.js app"]
   App --> Clerk["Clerk auth"]
-  App --> Supabase["Supabase database"]
-  App --> Blueprint["Blueprint workflow"]
-  Blueprint --> OpenAI["OpenAI structured generation"]
+  App --> Supabase["Supabase"]
+
+  App --> Blueprint["Blueprint generation"]
+  Blueprint --> OpenAIText["OpenAI structured output"]
   Blueprint --> Supabase
-  App --> Images["Image generation"]
-  Images --> Blob["Vercel Blob"]
-  Images --> Supabase
-  App --> Runner["Generation runner"]
+
+  App --> ImageGen["Product image generation"]
+  ImageGen --> OpenAIImages["OpenAI image model"]
+  ImageGen --> Blob["Vercel Blob"]
+  ImageGen --> Supabase
+
+  App --> Runner["Sandbox generation runner"]
   Runner --> Sandbox["Vercel Sandbox"]
   Sandbox --> Commerce["Next.js Commerce workspace"]
   Sandbox --> Preview["Live preview URL"]
-  Sandbox --> Codex["Codex repository transform"]
+  Sandbox --> Codex["Codex CLI"]
   Codex --> Commerce
-  Sandbox --> Validate["Build validation and repair loop"]
-  Validate --> Commerce
-  Sandbox --> GitHub["Generated GitHub repository"]
+  Sandbox --> Validation["Build validation and repair loop"]
+  Validation --> Commerce
+
+  Sandbox --> GitHub["Generated GitHub repo"]
   GitHub --> Vercel["Generated Vercel project"]
-  Vercel --> Live["Live storefront URL"]
-  Sandbox --> Supabase
-  Preview --> App
-  Live --> App
+  Vercel --> Live["Production storefront"]
+
+  Sandbox --> Events["Workflow events"]
+  Events --> Supabase
+  Supabase --> Status["Status workspace UI"]
+  Preview --> Status
+  Live --> Status
 ```
 
-## Core Modules
+## Key Modules
 
-- `src/app` - App Router routes, server actions, status pages, and API routes.
-- `src/components` - App shell and shared UI primitives.
-- `src/lib/db` - Database types and Zod schemas.
-- `src/lib/supabase` - Supabase browser/server client factories.
-- `src/lib/blob` - Product image upload helpers.
-- `src/lib/codex` - Codex SDK wrapper and event logging utilities.
-- `src/lib/github` - GitHub repository creation and authenticated remote helpers.
-- `src/lib/vercel` - Vercel project and deployment API helpers.
-- `src/lib/store-generation` - Store blueprint generation, sandbox orchestration, workflow state, publishing config, and transformation runtime.
-- `prompts` - Codex transformation prompts and Commerce safety rules.
-- `supabase` - Base schema and migrations.
-- `docs/adr` - Architecture decision records.
-- `CONTEXT.md` - Domain language and architectural boundaries for future agents.
+- `src/app` - routes, server actions, status UI, and API routes.
+- `src/components` - app shell and shared UI primitives.
+- `src/lib/store-generation` - blueprint generation, image generation, sandbox orchestration, workflow status mapping, publishing config, and sandbox runtime helpers.
+- `src/lib/stores` - Supabase repositories for stores, workflow runs, and workflow events.
+- `src/lib/blob` - Vercel Blob upload helpers.
+- `src/lib/github` - GitHub repository API helpers.
+- `src/lib/vercel` - Vercel project/deployment API helpers.
+- `lib/store-generation/store-blueprint.ts` - shared StoreBlueprint Zod schema and deterministic fallback generator.
+- `prompts/codex-transform.ts` - bounded Commerce transformation prompt.
+- `scripts/create-commerce-sandbox-snapshot.ts` - prepares a reusable Commerce sandbox snapshot.
+- `supabase` - schema and migrations.
+- `docs/adr` - architecture decision records.
 
-## User Flow
+## Main Routes
 
-### Create A Store
+- `/` - prompt-first create experience.
+- `/create-store` - same store creation flow.
+- `/dashboard` - latest stores for the signed-in user.
+- `/stores/[storeId]` - blueprint approval, catalog review, image generation, and final generation CTA.
+- `/stores/[storeId]/status` - live generation workspace with preview, timeline, logs, GitHub repo, and live store URL.
+- `/api/health/check` - deployment health check.
+- `/api/stores/[storeId]/workflow-status` - status polling endpoint.
+- `/api/stores/[storeId]/blueprint` - blueprint data endpoint.
 
-`/` and `/create-store` let a user enter a store idea. Suggested prompts submit immediately.
-
-The app creates a store row, redirects immediately, and then generates the blueprint in phases:
-
-- Brand concept first, so the page renders quickly.
-- Product catalog second, so product skeletons can resolve later.
-- Product image generation as an explicit approval step.
-
-### Approve Blueprint
-
-`/stores/[storeId]` shows the generated brand, palette, catalog, and image prompts.
-
-The user can regenerate product concepts, generate product images, and then generate the final store. Store generation is intended to happen after images are ready.
-
-### Watch Generation
-
-`/stores/[storeId]/status` shows a build workspace:
-
-- compact generation steps
-- optional activity log
-- optional technical details
-- live sandbox preview
-- GitHub and Vercel links when available
-
-## Environment Setup
+## Local Setup
 
 Install dependencies:
 
 ```bash
-pnpm install
+npm install
 ```
 
-Create local env:
+Create local environment file:
 
 ```bash
 cp .env.example .env.local
 ```
 
-Start development:
+Start the app:
 
 ```bash
-pnpm dev
+npm run dev
 ```
 
-The app defaults to local generation unless `STOREFORGE_GENERATION_RUNTIME=sandbox` is configured.
+Open:
 
-## Required Services
+```text
+http://localhost:3000
+```
+
+If another dev server is already using port 3000, Next.js may start on 3001.
+
+## Required Environment
+
+### App
+
+```bash
+NEXT_PUBLIC_APP_URL=http://localhost:3000
+```
 
 ### Clerk
-
-Create a Clerk app and set:
 
 ```bash
 NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY=
@@ -136,9 +142,9 @@ NEXT_PUBLIC_CLERK_SIGN_IN_URL=/sign-in
 NEXT_PUBLIC_CLERK_SIGN_UP_URL=/sign-up
 ```
 
-### Supabase
+If Clerk is not configured locally, the app uses the existing development user fallback.
 
-Create a Supabase project and set:
+### Supabase
 
 ```bash
 NEXT_PUBLIC_SUPABASE_URL=
@@ -146,17 +152,15 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
 ```
 
-Apply the base schema and migrations:
+Apply:
 
-```bash
+```text
 supabase/schema.sql
 supabase/migrations/0002_workflow_run_observability.sql
 supabase/migrations/0003_workflow_events.sql
 ```
 
-### OpenAI And Codex
-
-Blueprint and image generation use OpenAI env vars:
+### OpenAI
 
 ```bash
 OPENAI_API_KEY=
@@ -168,7 +172,9 @@ STOREFORGE_IMAGE_SIZE=1024x1024
 STOREFORGE_IMAGE_FORMAT=webp
 ```
 
-Codex repository transformation uses:
+Blueprint generation falls back to a deterministic local generator if no OpenAI key is configured. Image generation requires an OpenAI key.
+
+### Codex
 
 ```bash
 CODEX_API_KEY=
@@ -176,11 +182,12 @@ CODEX_MODEL=
 CODEX_BASE_URL=
 CODEX_CLI_PACKAGE=@openai/codex@0.130.0
 CODEX_SANDBOX_MODE=danger-full-access
+CODEX_BASE_COMMERCE_REPO=vercel/commerce
 ```
 
-### Vercel Blob
+Codex runs as a CLI command inside Vercel Sandbox. The app no longer uses the Codex SDK in the production path.
 
-Generated product images are uploaded to Vercel Blob:
+### Vercel Blob
 
 ```bash
 BLOB_READ_WRITE_TOKEN=
@@ -188,16 +195,15 @@ BLOB_READ_WRITE_TOKEN=
 
 ### Vercel Sandbox
 
-For production-style generation, create a Commerce sandbox snapshot:
+Create a reusable Commerce snapshot:
 
 ```bash
 npm run sandbox:snapshot
 ```
 
-Add the printed snapshot id:
+Set:
 
 ```bash
-STOREFORGE_GENERATION_RUNTIME=sandbox
 STOREFORGE_COMMERCE_REPO_URL=https://github.com/vercel/commerce.git
 STOREFORGE_COMMERCE_SANDBOX_SNAPSHOT_ID=
 STOREFORGE_SANDBOX_TIMEOUT_MS=2700000
@@ -206,11 +212,9 @@ STOREFORGE_LIVE_PREVIEW_ENABLED=true
 STOREFORGE_LIVE_PREVIEW_PORT=3000
 ```
 
-If no snapshot is configured, the sandbox can fall back to cloning Commerce inside the sandbox.
+The snapshot path is preferred because it avoids recloning and reinstalling Commerce on every run.
 
-### GitHub And Vercel Deployment
-
-To deploy generated stores, enable deployment and provide GitHub/Vercel credentials:
+### GitHub And Vercel Publishing
 
 ```bash
 STOREFORGE_DEPLOYMENT_ENABLED=true
@@ -219,28 +223,30 @@ STOREFORGE_GITHUB_OWNER=
 STOREFORGE_GITHUB_OWNER_TYPE=user
 STOREFORGE_GITHUB_REPO_VISIBILITY=private
 VERCEL_TOKEN=
+VERCEL_ORG_ID=
+VERCEL_PROJECT_ID=
 VERCEL_TEAM_ID=
 ```
 
-The GitHub token needs permission to create repositories and push code for `STOREFORGE_GITHUB_OWNER`.
+`GITHUB_TOKEN` needs permission to create repositories and push code for `STOREFORGE_GITHUB_OWNER`.
 
-The Vercel token must belong to an account or team that can access repositories under that GitHub owner through the Vercel GitHub integration.
+`VERCEL_TOKEN` must belong to a Vercel account or team that can deploy repositories from that GitHub owner.
 
-Generated repositories are named:
+Generated repositories use:
 
 ```text
 storeforge-{store-slug}-{storeId8}
 ```
 
-## Vercel Project Setup
+## Vercel Project Commands
 
-Link this checkout to Vercel:
+Link this app to Vercel:
 
 ```bash
 vercel link
 ```
 
-Pull Vercel env vars locally:
+Pull env vars:
 
 ```bash
 vercel env pull .env.local
@@ -249,7 +255,7 @@ vercel env pull .env.local
 Run locally:
 
 ```bash
-pnpm dev
+npm run dev
 ```
 
 Health check:
@@ -258,31 +264,27 @@ Health check:
 /api/health/check
 ```
 
-## Useful Scripts
+## Scripts
 
 ```bash
+npm run dev
 npm run lint
 npm run build
-npm run codex:spike
-npm run commerce:spike
 npm run sandbox:snapshot
 ```
 
-`codex:spike` proves Codex can edit a small filesystem workspace.
+## Commerce Transformation Rules
 
-`commerce:spike` proves Codex can transform the Commerce template and run validation.
-
-`sandbox:snapshot` prepares a reusable Commerce snapshot for faster sandbox generation.
-
-## Repository Transformation Rules
-
-Codex must preserve the base Commerce app:
+Codex should keep the generated store close to the stable Commerce template:
 
 - Do not rewrite checkout or cart infrastructure.
-- Do not replace the Commerce data model with a new app architecture.
-- Keep product pages and product listing pages responsive and well-spaced.
-- Use generated Blob image URLs in the Commerce catalog and allow the Blob host in `next.config`.
-- Prefer small, targeted changes to branding, theme, imagery, navigation copy, and catalog data.
+- Do not replace the Commerce data model with a separate app.
+- Keep product listing and product detail pages responsive.
+- Preserve the mobile menu and avoid long nav labels.
+- Keep product page content well-spaced below the navigation.
+- Use generated Vercel Blob image URLs for catalog products.
+- Add the Blob host to Commerce `next.config` image allowlist.
+- Prefer small targeted changes to branding, theme, imagery, navigation copy, homepage copy, and catalog data.
 - Run build validation and use at most two repair attempts.
 
 ## Architecture Decisions

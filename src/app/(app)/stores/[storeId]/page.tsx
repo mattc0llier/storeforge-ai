@@ -25,11 +25,11 @@ import type { StoreBlueprint } from "@/lib/store-generation/store-blueprint";
 
 import {
   generateProductImagesAction,
-  launchStoreAction,
   regenerateProductConceptAction,
 } from "./actions";
 import { BlueprintGenerationTrigger } from "./blueprint-generation-trigger";
 import { ImageGenerationForm } from "./image-generation-form";
+import { GenerateStoreForm } from "./generate-store-form";
 
 export default async function StoreBlueprintPage({
   params,
@@ -192,22 +192,10 @@ export default async function StoreBlueprintPage({
               </a>
             </Button>
           ) : (
-            <form action={launchStoreAction.bind(null, store.id)}>
-              <Button
-                className="w-full"
-                disabled={!hasGeneratedProductImages}
-                size="lg"
-                title={
-                  hasGeneratedProductImages
-                    ? undefined
-                    : "Generate product images before creating the final store."
-                }
-                type="submit"
-              >
-                <Rocket />
-                Generate store
-              </Button>
-            </form>
+            <GenerateStoreForm
+              disabled={!hasGeneratedProductImages}
+              storeId={store.id}
+            />
           )}
           {!hasGeneratedProductImages && !isWorkflowActive ? (
             <p className="text-xs text-muted-foreground">

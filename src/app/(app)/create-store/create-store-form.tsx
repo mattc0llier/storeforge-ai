@@ -31,13 +31,17 @@ const examplePrompts = [
   },
 ];
 
-export function CreateStoreForm() {
+export function CreateStoreForm({
+  initialPrompt = "",
+}: {
+  initialPrompt?: string;
+}) {
   const formRef = useRef<HTMLFormElement>(null);
   const [state, formAction, isPending] = useActionState(
     createStoreAction,
     initialState,
   );
-  const [prompt, setPrompt] = useState("");
+  const [prompt, setPrompt] = useState(initialPrompt);
 
   function submitExamplePrompt(example: string) {
     flushSync(() => {

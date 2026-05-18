@@ -60,12 +60,12 @@ Agents should:
 
 ---
 
-## Codex SDK Rules
+## Codex Execution Rules
 
-- Never invent SDK APIs
-- Inspect installed package types first
-- Keep SDK logic inside `lib/codex`
-- Stream agent progress into workflow logs
+- Run repository transformation through the Codex CLI inside Vercel Sandbox
+- Never invent Codex CLI flags or SDK APIs
+- Keep Codex execution logic inside the sandbox generation modules
+- Stream Codex JSON events into workflow logs
 
 ---
 

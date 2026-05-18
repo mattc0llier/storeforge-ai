@@ -8,13 +8,10 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "codex:spike": "tsx --tsconfig tsconfig.scripts.json scripts/codex-spike.ts",
-    "commerce:spike": "tsx --tsconfig tsconfig.scripts.json scripts/transform-commerce-spike.ts",
     "sandbox:snapshot": "tsx --tsconfig tsconfig.scripts.json scripts/create-commerce-sandbox-snapshot.ts"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.3.4",
-    "@openai/codex-sdk": "^0.130.0",
     "@supabase/supabase-js": "^2.105.4",
     "@vercel/blob": "^2.3.3",
     "@vercel/sandbox": "^1.10.2",
