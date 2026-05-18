@@ -3,6 +3,7 @@
 import { auth } from "@clerk/nextjs/server";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
+import { after } from "next/server";
 
 import { runStoreGeneration } from "@/lib/store-generation/generation-runner";
 import { regenerateProductConcept } from "@/lib/store-generation/blueprint-generator";
@@ -49,18 +50,25 @@ export async function launchStoreAction(storeId: string) {
       currentStep: "queued",
     });
 
-    const generation = runStoreGeneration({
-      storeId,
-      workflowRunId: workflowRun.id,
-    });
-
-    if (shouldAwaitGenerationStartup()) {
-      await generation;
-    } else {
-      void generation.catch((error: unknown) => {
+    after(async () => {
+      try {
+        await runStoreGeneration({
+          storeId,
+          workflowRunId: workflowRun.id,
+        });
+      } catch (error) {
         console.error("[store-generation] background job failed", error);
-      });
-    }
+        await updateWorkflowRun(workflowRun.id, {
+          status: "failed",
+          currentStep: "failed",
+          completedAt: new Date().toISOString(),
+          errorMessage:
+            error instanceof Error
+              ? error.message
+              : "Store generation failed.",
+        });
+      }
+    });
   } catch (error) {
     await updateWorkflowRun(workflowRun.id, {
       status: "failed",
@@ -137,16 +145,6 @@ export async function generateProductImagesAction(storeId: string) {
   });
 
   revalidatePath(`/stores/${storeId}`);
-}
-
-function shouldAwaitGenerationStartup() {
-  const runtime = process.env.STOREFORGE_GENERATION_RUNTIME;
-
-  if (runtime === "local") {
-    return false;
-  }
-
-  return runtime === "sandbox" || process.env.VERCEL === "1";
 }
 
 function hasGeneratedProductImages(blueprint: StoreBlueprint) {
