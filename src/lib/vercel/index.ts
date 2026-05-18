@@ -1,3 +1,5 @@
+import { getGeneratedStorePublishingConfig } from "@/lib/store-generation/publishing-config";
+
 export interface VercelDeploymentInput {
   storeId: string;
   repositoryFullName: string;
@@ -38,7 +40,7 @@ export async function createLinkedVercelProject({
   projectName,
   repositoryFullName,
 }: Pick<VercelDeploymentInput, "projectName" | "repositoryFullName">) {
-  const token = requireEnv("VERCEL_TOKEN");
+  const token = requireVercelToken();
   const response = await fetch(
     withVercelTeam("https://api.vercel.com/v11/projects"),
     {
@@ -75,7 +77,7 @@ export async function createLinkedVercelProject({
 export async function deployGeneratedStore(
   input: VercelDeploymentInput,
 ): Promise<VercelDeploymentResult> {
-  const token = requireEnv("VERCEL_TOKEN");
+  const token = requireVercelToken();
   const project = await createLinkedVercelProject(input);
   const deployment = await createGitDeployment({
     token,
@@ -224,7 +226,7 @@ function getVercelHeaders(token: string) {
 }
 
 function withVercelTeam(url: string) {
-  const teamId = process.env.VERCEL_TEAM_ID;
+  const teamId = getGeneratedStorePublishingConfig().vercelTeamId;
 
   if (!teamId) {
     return url;
@@ -238,11 +240,11 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function requireEnv(key: string) {
-  const value = process.env[key];
+function requireVercelToken() {
+  const value = getGeneratedStorePublishingConfig().vercelToken;
 
   if (!value) {
-    throw new Error(`Missing required environment variable: ${key}`);
+    throw new Error("Missing required environment variable: VERCEL_TOKEN");
   }
 
   return value;

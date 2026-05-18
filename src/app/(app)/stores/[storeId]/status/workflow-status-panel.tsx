@@ -16,6 +16,15 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import type { WorkflowEvent, WorkflowRun } from "@/lib/db/schema";
+import {
+  buildPreviewFrameUrl,
+  createWorkflowStatusView,
+  formatTime,
+  generationSteps,
+  getRecordString,
+  isTerminalWorkflowStatus,
+  type StepState,
+} from "@/lib/store-generation/workflow-status-view";
 import { cn } from "@/lib/utils";
 
 type WorkflowStatusPayload = {
@@ -36,54 +45,6 @@ type WorkflowStatusPanelProps = {
   initialWorkflowRun: WorkflowRun | null;
   initialWorkflowEvents: WorkflowEvent[];
 };
-
-const generationSteps = [
-  {
-    id: "workspace",
-    label: "Workspace",
-    detail: "Sandbox and Commerce dependencies.",
-  },
-  {
-    id: "preview",
-    label: "Live preview",
-    detail: "Run Commerce dev server in the sandbox.",
-  },
-  {
-    id: "products",
-    label: "Products",
-    detail: "Prepare product metadata and assets.",
-  },
-  {
-    id: "codex",
-    label: "Codex transform",
-    detail: "Apply bounded storefront changes.",
-  },
-  {
-    id: "build",
-    label: "Build validation",
-    detail: "Run Commerce build and tests.",
-  },
-  {
-    id: "repair",
-    label: "Repair loop",
-    detail: "Focused fixes when validation fails.",
-  },
-  {
-    id: "preparing_deployment",
-    label: "Artifact",
-    detail: "Persist generated metadata.",
-  },
-  {
-    id: "repo",
-    label: "Repository",
-    detail: "Push generated code to GitHub.",
-  },
-  {
-    id: "deployment",
-    label: "Production",
-    detail: "Create the Vercel deployment.",
-  },
-];
 
 export function WorkflowStatusPanel({
   storeId,
@@ -136,34 +97,30 @@ export function WorkflowStatusPanel({
     };
   }, [storeId, workflowRun?.status]);
 
-  const previewUrl = getArtifactString(workflowRun, "previewUrl");
-  const previewStatus =
-    getArtifactString(workflowRun, "previewStatus") ||
-    (previewUrl ? "queued" : "pending");
-  const previewError = getArtifactString(workflowRun, "previewError");
-  const modifiedFiles = getArtifactStringArray(workflowRun, "modifiedFiles");
-  const generatedDiff = getArtifactString(workflowRun, "generatedDiff");
-  const failedCommandOutput = getFailedCommandOutput(workflowRun);
-  const timing = getWorkflowTiming(workflowEvents);
-  const generatedRepository = getArtifactRecord(
-    workflowRun,
-    "generatedRepository",
-  );
-  const vercelProject = getArtifactRecord(workflowRun, "vercelProject");
-  const vercelDeployment = getArtifactRecord(workflowRun, "vercelDeployment");
-  const liveDeploymentUrl = getRecordString(vercelDeployment, "url");
-  const repositoryUrl = getRecordString(generatedRepository, "url");
-  const repositoryName = getRecordString(generatedRepository, "fullName");
-  const visiblePreviewUrl =
-    workflowRun?.status === "succeeded" && liveDeploymentUrl
-      ? liveDeploymentUrl
-      : previewUrl;
-  const deploymentEnabled =
-    generatedRepository !== null ||
-    getArtifactBoolean(workflowRun, "deploymentEnabled");
-  const stepStates = useMemo(() => {
-    return getStepStates(workflowRun, deploymentEnabled);
-  }, [deploymentEnabled, workflowRun]);
+  const statusView = useMemo(() => {
+    return createWorkflowStatusView({ workflowEvents, workflowRun });
+  }, [workflowEvents, workflowRun]);
+  const {
+    activityItems,
+    artifacts: {
+      failedCommandOutput,
+      generatedDiff,
+      generatedRepository,
+      modifiedFiles,
+      repositoryName,
+      repositoryUrl,
+      vercelProject,
+    },
+    preview: {
+      liveDeploymentUrl,
+      previewError,
+      previewStatus,
+      rawPreviewUrl,
+      visiblePreviewUrl,
+    },
+    stepStates,
+    timing,
+  } = statusView;
 
   useEffect(() => {
     if (!visiblePreviewUrl || isTerminalWorkflowStatus(workflowRun?.status)) {
@@ -175,6 +132,27 @@ export function WorkflowStatusPanel({
     }, 12000);
 
     return () => window.clearInterval(interval);
+  }, [visiblePreviewUrl, workflowRun?.status]);
+
+  useEffect(() => {
+    if (!visiblePreviewUrl) {
+      return;
+    }
+
+    const refreshDelays = isTerminalWorkflowStatus(workflowRun?.status)
+      ? [1500, 5000, 10000]
+      : [1500];
+    const timers = refreshDelays.map((delay) =>
+      window.setTimeout(() => {
+        setPreviewRefreshKey((value) => value + 1);
+      }, delay),
+    );
+
+    return () => {
+      for (const timer of timers) {
+        window.clearTimeout(timer);
+      }
+    };
   }, [visiblePreviewUrl, workflowRun?.status]);
 
   return (
@@ -279,22 +257,8 @@ export function WorkflowStatusPanel({
               <Badge variant="secondary">{workflowEvents.length} events</Badge>
             </summary>
             <div className="space-y-2 border-t p-3">
-              {workflowEvents.length ? (
-                workflowEvents
-                  .slice(-18)
-                  .map((event, index, visibleEvents) => {
-                    const previous = visibleEvents[index - 1];
-                    const delta = previous
-                      ? formatDuration(
-                          new Date(event.createdAt).getTime() -
-                            new Date(previous.createdAt).getTime(),
-                        )
-                      : "+0s";
-
-                    return { delta, event };
-                  })
-                  .reverse()
-                  .map(({ delta, event }) => {
+              {activityItems.length ? (
+                activityItems.map(({ delta, event }) => {
                     return (
                       <div className="rounded-md border p-3" key={event.id}>
                         <div className="flex items-center justify-between gap-2">
@@ -428,7 +392,7 @@ export function WorkflowStatusPanel({
         previewRefreshKey={previewRefreshKey}
         previewStatus={previewStatus}
         previewUrl={visiblePreviewUrl}
-        rawPreviewUrl={previewUrl}
+        rawPreviewUrl={rawPreviewUrl}
         workflowStatus={workflowRun?.status ?? "queued"}
         onRefresh={() => setPreviewRefreshKey((value) => value + 1)}
       />
@@ -630,70 +594,7 @@ function ArtifactLink({
   );
 }
 
-function getStepStates(workflowRun: WorkflowRun | null, deploymentEnabled: boolean) {
-  const states: Record<
-    string,
-    "pending" | "running" | "complete" | "failed" | "skipped"
-  > = {};
-
-  if (!workflowRun) {
-    for (const step of generationSteps) states[step.id] = "pending";
-    return states;
-  }
-
-  if (workflowRun.status === "failed") {
-    for (const step of generationSteps) states[step.id] = "pending";
-    const failedStep = workflowRun.currentStep ?? "workspace";
-    const failedIndex = Math.max(
-      generationSteps.findIndex((step) => step.id === failedStep),
-      0,
-    );
-
-    for (let index = 0; index < failedIndex; index += 1) {
-      states[generationSteps[index].id] = "complete";
-    }
-    states[generationSteps[failedIndex].id] = "failed";
-    return states;
-  }
-
-  if (workflowRun.status === "succeeded") {
-    for (const step of generationSteps) {
-      states[step.id] =
-        (step.id === "repo" || step.id === "deployment") && !deploymentEnabled
-          ? "skipped"
-          : step.id === "repair" && workflowRun.repairCount === 0
-            ? "skipped"
-            : "complete";
-    }
-    return states;
-  }
-
-  const currentIndex = Math.max(
-    generationSteps.findIndex((step) => step.id === workflowRun.currentStep),
-    0,
-  );
-
-  for (let index = 0; index < generationSteps.length; index += 1) {
-    const step = generationSteps[index];
-    if (
-      step.id === "repair" &&
-      workflowRun.repairCount === 0 &&
-      currentIndex > index
-    ) {
-      states[step.id] = "skipped";
-    } else if (index < currentIndex) {
-      states[step.id] = "complete";
-    } else if (index === currentIndex) {
-      states[step.id] = "running";
-    } else {
-      states[step.id] = "pending";
-    }
-  }
-
-  return states;
-}
-
-function renderStepIcon(state: string) {
+function renderStepIcon(state: StepState) {
   if (state === "complete") {
     return <CheckCircle2 className="size-4 text-emerald-500" />;
   }
@@ -740,102 +641,4 @@ function PreformattedList({
       {visibleItems.length ? visibleItems.join("\n") : empty}
     </pre>
   );
-}
-
-function getArtifactStringArray(workflowRun: WorkflowRun | null, key: string) {
-  const value = workflowRun?.artifactMetadata[key];
-
-  if (!Array.isArray(value)) {
-    return [];
-  }
-
-  return value.filter((item): item is string => typeof item === "string");
-}
-
-function getArtifactString(workflowRun: WorkflowRun | null, key: string) {
-  const value = workflowRun?.artifactMetadata[key];
-
-  return typeof value === "string" ? value : "";
-}
-
-function getArtifactBoolean(workflowRun: WorkflowRun | null, key: string) {
-  const value = workflowRun?.artifactMetadata[key];
-
-  return typeof value === "boolean" ? value : false;
-}
-
-function getArtifactRecord(workflowRun: WorkflowRun | null, key: string) {
-  const value = workflowRun?.artifactMetadata[key];
-
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  return value as Record<string, unknown>;
-}
-
-function getRecordString(record: Record<string, unknown> | null, key: string) {
-  const value = record?.[key];
-
-  return typeof value === "string" && value.trim() ? value : null;
-}
-
-function getFailedCommandOutput(workflowRun: WorkflowRun | null) {
-  const value = workflowRun?.artifactMetadata.failedCommandOutput;
-
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-
-  const output = "output" in value ? value.output : null;
-
-  return typeof output === "string" && output.trim() ? output : null;
-}
-
-function getWorkflowTiming(events: WorkflowEvent[]) {
-  if (!events.length) {
-    return { elapsedLabel: "pending" };
-  }
-
-  const startedAt = new Date(events[0].createdAt).getTime();
-  const endedAt = new Date(events[events.length - 1].createdAt).getTime();
-
-  return {
-    elapsedLabel: formatDuration(endedAt - startedAt),
-  };
-}
-
-function isTerminalWorkflowStatus(status: string | null | undefined) {
-  return status === "succeeded" || status === "failed" || status === "canceled";
-}
-
-function buildPreviewFrameUrl(url: string, refreshKey: number) {
-  if (!refreshKey) {
-    return url;
-  }
-
-  return `${url}${url.includes("?") ? "&" : "?"}storeforgePreview=${refreshKey}`;
-}
-
-function formatTime(value: string) {
-  return new Date(value).toISOString().slice(11, 19);
-}
-
-function formatDuration(durationMs: number) {
-  const safeDuration = Math.max(durationMs, 0);
-
-  if (safeDuration < 1000) {
-    return `+${safeDuration}ms`;
-  }
-
-  const seconds = Math.round(safeDuration / 1000);
-
-  if (seconds < 60) {
-    return `+${seconds}s`;
-  }
-
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-
-  return `+${minutes}m ${remainder}s`;
 }

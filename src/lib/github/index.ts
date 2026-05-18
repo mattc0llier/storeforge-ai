@@ -1,5 +1,12 @@
-export type GitHubOwnerType = "user" | "org";
-export type GitHubRepositoryVisibility = "private" | "public";
+import {
+  buildGeneratedStoreRepositoryName,
+  getGeneratedStorePublishingConfig,
+  type GeneratedStoreOwnerType,
+  type GeneratedStoreRepositoryVisibility,
+} from "@/lib/store-generation/publishing-config";
+
+export type GitHubOwnerType = GeneratedStoreOwnerType;
+export type GitHubRepositoryVisibility = GeneratedStoreRepositoryVisibility;
 
 export interface GeneratedRepositoryInput {
   storeId: string;
@@ -30,12 +37,12 @@ type GitHubRepositoryResponse = {
 export async function createGeneratedStoreRepository({
   storeId,
   name,
-  owner = requireEnv("STOREFORGE_GITHUB_OWNER"),
+  owner = requireGitHubOwner(),
   ownerType = getOwnerType(),
   visibility = getVisibility(),
 }: GeneratedRepositoryInput): Promise<GeneratedRepository> {
-  const token = requireEnv("GITHUB_TOKEN");
-  const repoName = buildGeneratedRepositoryName(name, storeId);
+  const token = requireGitHubToken();
+  const repoName = buildGeneratedStoreRepositoryName(name, storeId);
   const response = await fetch(getRepositoryCreateUrl(owner, ownerType), {
     method: "POST",
     headers: getGitHubHeaders(token),
@@ -65,19 +72,13 @@ export async function createGeneratedStoreRepository({
 }
 
 export function buildGeneratedRepositoryName(name: string, storeId: string) {
-  const slug = name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/(^-|-$)/g, "")
-    .slice(0, 70);
-
-  return `storeforge-${slug || "store"}-${storeId.slice(0, 8)}`;
+  return buildGeneratedStoreRepositoryName(name, storeId);
 }
 
 export function buildAuthenticatedGitRemoteUrl({
   owner,
   repoName,
-  token = requireEnv("GITHUB_TOKEN"),
+  token = requireGitHubToken(),
 }: {
   owner: string;
   repoName: string;
@@ -103,21 +104,31 @@ function getGitHubHeaders(token: string) {
 }
 
 function getOwnerType(): GitHubOwnerType {
-  return process.env.STOREFORGE_GITHUB_OWNER_TYPE === "org" ? "org" : "user";
+  return getGeneratedStorePublishingConfig().githubOwnerType;
 }
 
 function getVisibility(): GitHubRepositoryVisibility {
-  return process.env.STOREFORGE_GITHUB_REPO_VISIBILITY === "public"
-    ? "public"
-    : "private";
+  return getGeneratedStorePublishingConfig().githubRepositoryVisibility;
 }
 
-function requireEnv(key: string) {
-  const value = process.env[key];
+function requireGitHubOwner() {
+  const owner = getGeneratedStorePublishingConfig().githubOwner;
 
-  if (!value) {
-    throw new Error(`Missing required environment variable: ${key}`);
+  if (!owner) {
+    throw new Error(
+      "Missing required environment variable: STOREFORGE_GITHUB_OWNER",
+    );
   }
 
-  return value;
+  return owner;
+}
+
+function requireGitHubToken() {
+  const token = getGeneratedStorePublishingConfig().githubToken;
+
+  if (!token) {
+    throw new Error("Missing required environment variable: GITHUB_TOKEN");
+  }
+
+  return token;
 }
