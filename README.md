@@ -269,9 +269,40 @@ Health check:
 ```bash
 npm run dev
 npm run lint
+npm run test
 npm run build
 npm run sandbox:snapshot
 ```
+
+## Tests
+
+Unit tests run with Vitest:
+
+```bash
+npm run test
+```
+
+Current unit coverage focuses on the boundaries that matter most for this demo:
+
+- StoreBlueprint Zod validation and deterministic fallback constraints.
+- Supabase repository mapping between snake_case rows and app domain objects.
+- Sandbox job configuration, publishing env parsing, and Codex prompt guardrails.
+
+The Playwright smoke test covers the browser path from prompt entry to blueprint approval to the status shell:
+
+```bash
+npm run test:e2e
+```
+
+The smoke test is opt-in because it needs a signed-in Clerk session and writes a real store row to Supabase. Record an authenticated storage state first:
+
+```bash
+mkdir -p playwright/.auth
+npx playwright codegen --save-storage=playwright/.auth/user.json http://localhost:3001/sign-in
+STOREFORGE_E2E_AUTH_STATE=playwright/.auth/user.json npm run test:e2e
+```
+
+Without `STOREFORGE_E2E_AUTH_STATE`, the smoke test is skipped.
 
 ## Commerce Transformation Rules
 
