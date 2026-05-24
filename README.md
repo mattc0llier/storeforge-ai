@@ -288,21 +288,23 @@ Current unit coverage focuses on the boundaries that matter most for this demo:
 - Supabase repository mapping between snake_case rows and app domain objects.
 - Sandbox job configuration, publishing env parsing, and Codex prompt guardrails.
 
-The Playwright smoke test covers the browser path from prompt entry to blueprint approval to the status shell:
+The agent-browser smoke test covers the browser path from prompt entry to blueprint approval to the status shell:
 
 ```bash
 npm run test:e2e
 ```
 
-The smoke test is opt-in because it needs a signed-in Clerk session and writes a real store row to Supabase. Record an authenticated storage state first:
+The smoke test is opt-in because it needs a signed-in Clerk session and writes a real store row to Supabase. Start the app, sign in once with agent-browser, and save an authenticated browser state:
 
 ```bash
-mkdir -p playwright/.auth
-npx playwright codegen --save-storage=playwright/.auth/user.json http://localhost:3001/sign-in
-STOREFORGE_E2E_AUTH_STATE=playwright/.auth/user.json npm run test:e2e
+mkdir -p agent-browser/.auth
+npx agent-browser open http://localhost:3001/sign-in
+# Complete sign-in in the opened browser, then save the state:
+npx agent-browser state save agent-browser/.auth/user.json
+AGENT_BROWSER_STATE=agent-browser/.auth/user.json npm run test:e2e
 ```
 
-Without `STOREFORGE_E2E_AUTH_STATE`, the smoke test is skipped.
+Without `AGENT_BROWSER_STATE`, the smoke test is skipped.
 
 ## Commerce Transformation Rules
 
